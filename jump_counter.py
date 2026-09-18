@@ -19,9 +19,14 @@
      (카메라 쪽으로 기울이기) 점프가 아니다. 크기는 3프레임 중앙값을 써서 관절 튐을 줄인다.
   7. 줄넘기는 리듬이 있다. 후보가 비슷한 간격(period_range 안, 편차 period_tolerance 이하)으로
      rhythm_min 회 이어져야 세기 시작하고, 그때 앞의 후보들도 한꺼번에 반영한다.
-     리듬이 잡힌 뒤에는 rhythm_break 초 이상 쉬기 전까지 바로바로 센다.
+     리듬이 잡힌 뒤에는 최근 주기와 비슷한 간격(0.65~1.5배)으로 오는 후보만 바로 세고,
+     간격이 크게 어긋나면(걸린 뒤 허둥대는 걸음 등) 다시 리듬 확인으로 돌아간다.
      자세 바꾸기, 몸 흔들기, 한두 번 튕기기 같은 산발적 움직임은 여기서 걸러진다.
-  lenient=True 로 만들면 5~7번 검사를 끄고 몸이 오르내린 횟수만 센다.
+  8. 줄에 걸리면 리듬이 끊긴다. 줄은 30fps에서 보이지 않으므로, rhythm_break 초 넘게 쉬었다가
+     다시 리듬이 잡히면 그 직전 점프(걸린 시도)를 1회 빼고 misses 를 1 올린다 (miss_correction).
+     스스로 쉬었다 재개해도 1회가 빠지는 대가가 있다. 마지막에 그냥 멈추면 빠지지 않는다.
+     streak(현재 연속)와 best_streak(최고 연속)도 같이 센다.
+  lenient=True 로 만들면 5~8번 검사를 끄고 몸이 오르내린 횟수만 센다.
 """
 from __future__ import annotations
 
@@ -147,7 +152,7 @@ class JumpCounter:
                  max_shift: float = 0.5, max_scale_change: float = 0.2, max_width_change: float = 0.4,
                  rhythm_min: int = 3, period_range: tuple = (0.25, 1.5),
                  period_tolerance: float = 0.5, rhythm_break: float = 2.0,
-                 lenient: bool = False, debug: bool = False,
+                 miss_correction: bool = True, lenient: bool = False, debug: bool = False,
                  history_seconds: float = 12.0):
         self.threshold = threshold          # 점프로 인정할 최소 진폭 (몸통 길이 비율)
         self.min_interval = min_interval    # 점프 사이 최소 간격 (초)
@@ -164,6 +169,7 @@ class JumpCounter:
         self.period_range = period_range    # 점프 간격 허용 범위 (초): 분당 40 ~ 240회
         self.period_tolerance = period_tolerance  # 연속 간격끼리 허용하는 편차 비율
         self.rhythm_break = rhythm_break    # 이보다 오래 쉬면 리듬을 다시 확인
+        self.miss_correction = miss_correction and not lenient  # 쉬었다 재개하면 직전 점프를 걸린 것으로 보고 뺀다
         self.lenient = lenient              # True면 발/머리 대조, 제자리, 리듬 검사를 모두 끈다
         self.debug = debug                  # True면 후보마다 판정 내용을 log에 남긴다
         self.history = deque()              # (t, 높이) 그래프용
@@ -174,6 +180,9 @@ class JumpCounter:
     # ----------------------------------------------------------------- 상태
     def reset(self):
         self.count = 0
+        self.misses = 0              # 줄에 걸린 횟수 (리듬이 끊겼다 재개된 횟수)
+        self.streak = 0              # 현재 연속 성공 횟수
+        self.best_streak = 0         # 최고 연속 성공 횟수
         self.rejected = {"feet": 0, "motion": 0, "rhythm": 0}   # 걸러낸 이유별 횟수
         self.last_reject: Optional[tuple] = None   # (시각, 이유 문자열) 화면 표시용
         self.events: list[JumpEvent] = []
@@ -351,13 +360,37 @@ class JumpCounter:
             return "scale"
         return None
 
+    def _ref_period(self) -> Optional[float]:
+        """현재 리듬의 대표 주기: 최근 점프 간격들의 중앙값."""
+        recent = self.events[-6:]
+        gaps = sorted(recent[i + 1].t - recent[i].t for i in range(len(recent) - 1))
+        if not gaps:
+            return None
+        return gaps[len(gaps) // 2]
+
+    def _regular_suffix(self) -> list[JumpEvent]:
+        """pending 뒤쪽에서 간격이 규칙적인 최대 구간을 돌려준다 (앞쪽의 불규칙한 후보는 제외)."""
+        run = [self.pending[-1]]
+        lo, hi = self.period_range
+        for c in reversed(self.pending[:-1]):
+            gaps = [run[0].t - c.t] + [run[i + 1].t - run[i].t for i in range(len(run) - 1)]
+            if lo <= gaps[0] <= hi and (max(gaps) - min(gaps)) <= self.period_tolerance * max(gaps):
+                run.insert(0, c)
+            else:
+                break
+        return run
+
     def _rhythm(self, cand: JumpEvent) -> list[JumpEvent]:
         """리듬 검사. 세기로 확정된 점프 목록을 돌려준다."""
         t = cand.t
         if self.in_rhythm:
-            if t - self.events[-1].t <= self.rhythm_break:
+            gap = t - self.events[-1].t
+            ref = self._ref_period()
+            if gap <= self.rhythm_break and (ref is None or 0.65 * ref <= gap <= 1.5 * ref):
                 return [self._count(cand)]
-            self.in_rhythm = False              # 오래 쉬었으면 리듬을 다시 확인한다
+            self.in_rhythm = False              # 오래 쉬었거나 간격이 어긋남 -> 리듬을 다시 확인한다
+            if self.debug:
+                self.log.append(f"[{t:7.2f}s] 리듬 끊김 (간격 {gap:.2f}s, 주기 {ref or 0:.2f}s)")
         if self.pending and t - self.pending[-1].t > self.period_range[1]:
             self.rejected["rhythm"] += len(self.pending)   # 이어지지 못한 후보들은 버린다
             if self.debug:
@@ -365,19 +398,28 @@ class JumpCounter:
             self.pending = []
         self.pending.append(cand)
         if len(self.pending) >= self.rhythm_min:
-            run = self.pending[-self.rhythm_min:]
-            gaps = [run[i + 1].t - run[i].t for i in range(len(run) - 1)]
-            lo, hi = self.period_range
-            regular = all(lo <= g <= hi for g in gaps) and \
-                (not gaps or (max(gaps) - min(gaps)) <= self.period_tolerance * max(gaps))
-            if regular:
-                counted = [self._count(c) for c in self.pending]   # 앞의 후보들도 한꺼번에 반영
+            run = self._regular_suffix()
+            if len(run) >= self.rhythm_min:
+                dropped = len(self.pending) - len(run)
+                if dropped:
+                    self.rejected["rhythm"] += dropped        # 규칙적 구간 앞의 불규칙 후보는 버린다
+                if self.events and run[0].t - self.events[-1].t > self.rhythm_break:
+                    # 쉬었다가 다시 시작함: 직전 점프는 줄에 걸린 시도로 보고 뺀다
+                    if self.miss_correction:
+                        removed = self.events.pop()
+                        self.count -= 1
+                        self.misses += 1
+                        if self.debug:
+                            self.log.append(f"[{t:7.2f}s] 걸림으로 판단: {removed.t:.2f}s 점프 1회 제외 (실패 {self.misses})")
+                    self.streak = 0
+                counted = [self._count(c) for c in run]   # 앞의 후보들도 한꺼번에 반영
                 self.pending = []
                 self.in_rhythm = True
                 if self.debug:
                     self.log.append(f"[{t:7.2f}s] 리듬 확인: {len(counted)}개 반영 (총 {self.count})")
                 return counted
             if self.debug:
+                gaps = [self.pending[i + 1].t - self.pending[i].t for i in range(len(self.pending) - 1)]
                 self.log.append(f"[{t:7.2f}s] 리듬 대기 {len(self.pending)}/{self.rhythm_min} "
                                 f"(간격 {', '.join(f'{g:.2f}' for g in gaps)})")
         elif self.debug:
@@ -386,6 +428,8 @@ class JumpCounter:
 
     def _count(self, cand: JumpEvent) -> JumpEvent:
         self.count += 1
+        self.streak += 1
+        self.best_streak = max(self.best_streak, self.streak)
         cand.index = self.count
         self.events.append(cand)
         return cand
