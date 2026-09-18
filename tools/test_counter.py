@@ -45,14 +45,14 @@ def make_pose(shoulder_dy: float = 0.0, body_dy: float = 0.0, feet_dy: float = 0
 
 def bumps(n: int, amp: float, kind: str, hips_visible: bool = True, feet_visible: bool = True,
           period_s: float = 0.8, bump_s: float = 0.4, drift_x: float = 0.0, zoom_amp: float = 0.0,
-          hips_edge: bool = False):
-    """n번의 반정현파 상승/하강.
+          hips_edge: bool = False, tail_s: float = 1.0):
+    """n번의 반정현파 상승/하강. 마지막 주기 뒤에 tail_s 초 동안 서 있는다.
     kind: "jump" = 발 포함 전신, "shrug" = 어깨만, "squat" = 발은 땅에 두고 몸만 (무릎 굽혔다 펴기),
           "lean" = 몸이 올라가면서 카메라 쪽으로 다가옴 (앉아서 앞뒤로 흔들기).
     drift_x: 한 주기마다 좌우로 이동하는 양 (걷기).
     hips_edge: 엉덩이가 화면 아래 가장자리에 걸쳐 프레임마다 화면 안팎을 오가는 구도 (가시성 0.6)."""
     frames = []
-    total = int(n * period_s * FPS) + FPS
+    total = int(n * period_s * FPS) + int(tail_s * FPS)
     for i in range(total):
         t = i / FPS
         k = int(t // period_s)
@@ -73,11 +73,26 @@ def bumps(n: int, amp: float, kind: str, hips_visible: bool = True, feet_visible
     return frames
 
 
+def still(sec: float):
+    return [make_pose()] * int(sec * FPS)
+
+
 def run(seq):
     counter = JumpCounter()
     for i, lms in enumerate(seq):
         counter.update(i / FPS, extract_signal(lms, W, H))
     return counter
+
+
+# 줄에 걸린 상황: 5회 뛰다가 마지막 점프에서 걸림 -> 착지 직후 허둥대는 걸음(짧은 불규칙 튕김)
+# -> 3초 동안 줄 풀기 -> 다시 5회. 걸린 1회를 빼면 9회, 실패 1, 최고 연속 5.
+caught = (bumps(5, 0.04, "jump", tail_s=0.0)[: int((4 * 0.8 + 0.4) * FPS)]   # 마지막 착지 직후까지
+          + bumps(1, 0.03, "jump", period_s=0.25, bump_s=0.25, tail_s=3.0)
+          + bumps(5, 0.04, "jump"))
+# 걸리지 않고 스스로 2.5초 쉬었다 재개: 같은 규칙이 적용되어 1회가 빠진다 (알려진 대가)
+rested = bumps(5, 0.04, "jump", tail_s=2.5) + bumps(5, 0.04, "jump")
+# 쉬지 않고 템포만 2배로: 빠지는 것 없이 다 센다
+tempo = bumps(5, 0.05, "jump", tail_s=0.0) + bumps(8, 0.03, "jump", period_s=0.4, bump_s=0.24)
 
 
 def main() -> int:
@@ -102,15 +117,21 @@ def main() -> int:
          bumps(5, 0.04, "lean", hips_visible=False, feet_visible=False, zoom_amp=0.5), 0),
         ("걷기 5걸음 (몸이 들썩이며 좌우 이동)", bumps(5, 0.04, "jump", drift_x=0.3), 0),
         ("가만히 있기", bumps(0, 0.0, "jump"), 0),
+        ("줄에 걸림: 5회 -> 걸림+허둥댐 -> 3초 -> 5회", caught, 9, dict(misses=1, best_streak=5)),
+        ("쉬었다 재개: 5회 -> 2.5초 -> 5회 (직전 1회 빠짐)", rested, 9, dict(misses=1, best_streak=5)),
+        ("템포 변경: 느리게 5회 -> 바로 빠르게 8회", tempo, 13, dict(misses=0, best_streak=13)),
     ]
     ok = True
-    for name, seq, expect in cases:
+    for name, seq, expect, *extra in cases:
         counter = run(seq)
         passed = counter.count == expect
+        for k, v in (extra[0] if extra else {}).items():
+            passed = passed and getattr(counter, k) == v
         ok = ok and passed
         rej = counter.rejected
         print(f"[{'OK' if passed else 'FAIL'}] {name}: {counter.count}회 (기대 {expect}; 걸러냄 "
-              f"발 {rej['feet']}, 이동 {rej['motion']}, 리듬 {rej['rhythm']}, 대기 {len(counter.pending)})")
+              f"발 {rej['feet']}, 이동 {rej['motion']}, 리듬 {rej['rhythm']}, 대기 {len(counter.pending)}"
+              f"; 걸림 {counter.misses}, 최고 연속 {counter.best_streak})")
     # lenient 모드: 검사를 끄면 튕기기/으쓱도 세어진다 (사용자가 검사를 끌 때의 동작 확인)
     lenient = JumpCounter(lenient=True)
     for i, lms in enumerate(bumps(2, 0.04, "shrug")):
