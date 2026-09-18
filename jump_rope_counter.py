@@ -358,6 +358,8 @@ class CounterApp:
                 self._tick_fps()
                 if self.display or self.args.record:
                     self._render(frame, t)
+                else:
+                    self._drain_events(t)              # 창 없이 돌 때도 --verbose/--debug 출력
             if self.display:
                 if not self._handle_keys(wait_ms=30 if self.paused else 1):
                     break
@@ -371,6 +373,12 @@ class CounterApp:
             self.flash_t = t
             if self.args.verbose:
                 print(f"  #{ev.index:4d}  {ev.t - self.session_t0:7.2f}s  amp={ev.amplitude:.2f}")
+        if self.args.debug:
+            with self.lock:
+                lines = list(self.counter.log)
+                self.counter.log.clear()
+            for line in lines:
+                print(line)
         if self.is_camera and not self.slow_hint_shown and self.worker.processed >= 90:
             self.slow_hint_shown = True
             if self.worker.infer_ms > 45:
@@ -434,6 +442,7 @@ class CounterApp:
             threshold = self.counter.threshold
             pending = 0 if self.counter.in_rhythm else len(self.counter.pending)
             rhythm_min = self.counter.rhythm_min
+            last_reject = self.counter.last_reject
         lms = self.worker.latest_landmarks
         if self.overlay and lms:
             draw_skeleton(img, lms)
@@ -454,6 +463,9 @@ class CounterApp:
         status = (f"pose {self.worker.infer_ms:.0f} ms | {self.fps:.0f} fps | {self.args.model} | "
                   f"thr {threshold:.2f}" + (" | mirror" if self.mirror else ""))
         put_text(img, status, (14, 12 + ph + int(24 * s)), 0.55 * s, (200, 200, 200), 1)
+        if last_reject and t - last_reject[0] < 2.0:   # 방금 걸러낸 움직임과 그 이유
+            put_text(img, f"not counted: {last_reject[1]}", (14, 12 + ph + int(48 * s)),
+                     0.55 * s, (0, 170, 255), 1)
 
         if self.overlay:
             draw_signal_graph(img, history, events, threshold, t)
@@ -502,7 +514,8 @@ class CounterApp:
             "duration_s": round(duration, 1),
             "avg_per_min": round(count / duration * 60, 1) if duration > 0 else 0.0,
             "params": {"model": self.args.model, "threshold": self.counter.threshold,
-                       "min_interval": self.counter.min_interval, "signal": self.args.signal},
+                       "min_interval": self.counter.min_interval, "signal": self.args.signal,
+                       "lenient": self.args.lenient},
         }
         json_path = save_dir / f"session_{stamp}.json"
         json_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -547,6 +560,9 @@ def parse_args():
     p.add_argument("--smoothing", type=float, default=0.5, help="신호 평활화 계수 0~1 (1=없음), 기본 0.5")
     p.add_argument("--signal", choices=["torso", "feet"], default="torso",
                    help="움직임을 잴 부위: torso(몸통, 기본) / feet(발목, 전신이 보일 때)")
+    p.add_argument("--lenient", action="store_true",
+                   help="오작동 방지 검사(발/머리 대조, 제자리, 리듬)를 끄고 몸이 오르내린 횟수만 셈")
+    p.add_argument("--debug", action="store_true", help="점프 후보마다 판정 이유를 콘솔에 출력")
     p.add_argument("--no-mirror", action="store_true", help="카메라 화면 좌우반전 끄기")
     p.add_argument("--no-display", action="store_true", help="창 없이 실행 (동영상 일괄 처리용)")
     p.add_argument("--record", help="주석이 그려진 결과 영상을 이 경로(.mp4)에 저장")
@@ -591,7 +607,10 @@ def main():
     if is_camera:
         print("카메라 앞에서 상반신(어깨~엉덩이)이 보이도록 서세요. q 로 종료합니다.")
 
-    counter = JumpCounter(threshold=args.threshold, min_interval=args.min_interval, smoothing=args.smoothing)
+    counter = JumpCounter(threshold=args.threshold, min_interval=args.min_interval, smoothing=args.smoothing,
+                          lenient=args.lenient, debug=args.debug)
+    if args.lenient:
+        print("[설정] --lenient: 오작동 방지 검사를 끄고 몸이 오르내린 횟수만 셉니다.")
     lock = threading.Lock()
     worker = PoseWorker(landmarker, counter, lock, args.signal, args.infer_size)
     # 추론 스레드가 GIL을 빨리 돌려받도록 스레드 전환 간격을 줄인다 (기본 5 ms -> 1 ms).
