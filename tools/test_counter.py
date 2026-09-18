@@ -89,6 +89,12 @@ def run(seq):
 caught = (bumps(5, 0.04, "jump", tail_s=0.0)[: int((4 * 0.8 + 0.4) * FPS)]   # 마지막 착지 직후까지
           + bumps(1, 0.03, "jump", period_s=0.25, bump_s=0.25, tail_s=3.0)
           + bumps(5, 0.04, "jump"))
+# 걸렸다가 1.3초 만에 빠르게 다시 시작 (주기 0.8초 -> 걸림 기준 1.44초, 마지막 점프~재개 간격 약 1.95초)
+quick = (bumps(5, 0.04, "jump", tail_s=0.0)[: int((4 * 0.8 + 0.4) * FPS)]
+         + bumps(1, 0.03, "jump", period_s=0.25, bump_s=0.25, tail_s=1.3)
+         + bumps(5, 0.04, "jump"))
+# 박자 하나 놓치고 멈칫 (간격 1.4초 = 주기의 1.75배): 걸림이 아니므로 다 센다
+stutter = bumps(3, 0.04, "jump", tail_s=0.6) + bumps(3, 0.04, "jump")
 # 걸리지 않고 스스로 2.5초 쉬었다 재개: 같은 규칙이 적용되어 1회가 빠진다 (알려진 대가)
 rested = bumps(5, 0.04, "jump", tail_s=2.5) + bumps(5, 0.04, "jump")
 # 쉬지 않고 템포만 2배로: 빠지는 것 없이 다 센다
@@ -118,6 +124,8 @@ def main() -> int:
         ("걷기 5걸음 (몸이 들썩이며 좌우 이동)", bumps(5, 0.04, "jump", drift_x=0.3), 0),
         ("가만히 있기", bumps(0, 0.0, "jump"), 0),
         ("줄에 걸림: 5회 -> 걸림+허둥댐 -> 3초 -> 5회", caught, 9, dict(misses=1, best_streak=5)),
+        ("빠른 재개: 5회 -> 걸림 -> 1.3초 -> 5회", quick, 9, dict(misses=1, best_streak=5)),
+        ("박자 하나 멈칫 (간격 1.4초): 3회 -> 3회", stutter, 6, dict(misses=0, best_streak=6)),
         ("쉬었다 재개: 5회 -> 2.5초 -> 5회 (직전 1회 빠짐)", rested, 9, dict(misses=1, best_streak=5)),
         ("템포 변경: 느리게 5회 -> 바로 빠르게 8회", tempo, 13, dict(misses=0, best_streak=13)),
     ]
