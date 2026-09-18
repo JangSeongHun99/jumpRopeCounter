@@ -78,6 +78,8 @@ python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없�
    내려오면 점프 1회로 확정합니다. 기준선이 없어서 사람이 앞뒤로 움직여도 잘못 세지 않습니다.
 5. 0.2초보다 촘촘한 피크, 0.7초보다 느린 상승(앉았다 일어나기), 몸통 길이 1.5배가 넘는
    진폭(추적 튐)은 버립니다.
+6. 점프는 머리와 엉덩이도 같이 올라가지만 어깨 으쓱이나 팔 동작은 어깨만 올라갑니다.
+   머리(코·귀)나 엉덩이의 상승량이 몸통 상승량의 절반에 못 미치면 점프로 세지 않습니다.
 
 자세한 로직은 `jump_counter.py`에 있고, MediaPipe나 OpenCV 없이 단독으로 테스트할 수 있습니다.
 
@@ -124,6 +126,7 @@ python tools/evaluate.py 영상.mp4 --model lite full heavy
 ```
 
 포즈 추론 결과를 `.cache/`에 저장해 두므로 같은 영상을 다른 설정으로 다시 평가할 때는 바로 끝납니다.
+`python tools/test_counter.py`는 합성 데이터로 점프 5회는 세고 어깨 으쓱 5회는 세지 않는지 확인하는 단위 테스트입니다.
 
 ## 한계
 
@@ -139,5 +142,6 @@ python tools/evaluate.py 영상.mp4 --model lite full heavy
 | `jump_counter.py` | 신호 추출과 점프 판정 로직 (순수 파이썬) |
 | `pose_backend.py` | MediaPipe 모델 관리와 추론, 스켈레톤 그리기 |
 | `tools/evaluate.py` | 정확도 평가·튜닝 도구 |
+| `tools/test_counter.py` | 카운터 로직 단위 테스트 (점프 vs 어깨 으쓱) |
 | `models/` | 포즈 모델 파일 (`pose_landmarker_{lite,full,heavy}.task`) |
 | `run.bat` | 가상환경 생성 + 실행 |
