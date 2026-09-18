@@ -9,6 +9,8 @@
      (기준선을 따로 두지 않으므로 사람이 앞뒤로 움직여도 드리프트에 강하다)
   4. 최소 간격(min_interval), 최대 상승 시간(max_rise_time), 최대 진폭(max_amplitude)으로
      걷기·앉았다 일어나기·추적 튐 같은 오검출을 걸러낸다.
+  5. 점프는 머리와 엉덩이도 몸통과 함께 올라가지만, 어깨 으쓱이나 팔 동작은 어깨만 움직인다.
+     머리(코·귀)나 엉덩이의 상승량이 몸통 상승량의 coherence 비율에 못 미치면 점프로 세지 않는다.
 """
 from __future__ import annotations
 
@@ -26,6 +28,8 @@ class Landmark(NamedTuple):
 
 
 # MediaPipe Pose 33개 랜드마크 중 사용하는 인덱스
+NOSE = 0
+L_EAR, R_EAR = 7, 8
 L_SHOULDER, R_SHOULDER = 11, 12
 L_HIP, R_HIP = 23, 24
 L_ANKLE, R_ANKLE = 27, 28
@@ -43,9 +47,11 @@ def _vis(lm) -> float:
 @dataclass
 class BodySignal:
     """한 프레임에서 뽑은 신체 신호 (픽셀 단위)."""
-    center_y: float      # 몸통 중심 y (아래로 갈수록 커짐)
-    scale: float         # 몸통 길이 - 정규화 기준
+    center_y: float                 # 몸통 중심 y (아래로 갈수록 커짐)
+    scale: float                    # 몸통 길이 - 정규화 기준
     center_x: float = 0.0
+    head_y: Optional[float] = None  # 머리(코·귀 평균) y. 어깨 으쓱과 점프를 구분하는 데 쓴다
+    hip_y: Optional[float] = None   # 엉덩이 중점 y (보이지 않으면 None)
 
 
 def extract_signal(landmarks: Sequence, width: int, height: int,
@@ -84,7 +90,11 @@ def extract_signal(landmarks: Sequence, width: int, height: int,
         la, ra = pt(L_ANKLE), pt(R_ANKLE)
         if la[2] >= min_visibility and ra[2] >= min_visibility:
             center_y = (la[1] + ra[1]) / 2
-    return BodySignal(center_y=center_y, scale=scale, center_x=center[0])
+
+    head_pts = [p for p in (pt(NOSE), pt(L_EAR), pt(R_EAR)) if p[2] >= min_visibility]
+    head_y = sum(p[1] for p in head_pts) / len(head_pts) if head_pts else None
+    return BodySignal(center_y=center_y, scale=scale, center_x=center[0],
+                      head_y=head_y, hip_y=hip_mid[1] if hip_ok else None)
 
 
 @dataclass
@@ -101,13 +111,14 @@ class JumpCounter:
     def __init__(self, threshold: float = 0.05, min_interval: float = 0.20,
                  max_rise_time: float = 0.7, max_amplitude: float = 1.5,
                  smoothing: float = 0.5, lost_timeout: float = 0.5,
-                 history_seconds: float = 12.0):
+                 coherence: float = 0.5, history_seconds: float = 12.0):
         self.threshold = threshold          # 점프로 인정할 최소 진폭 (몸통 길이 비율)
         self.min_interval = min_interval    # 점프 사이 최소 간격 (초)
         self.max_rise_time = max_rise_time  # 이보다 느리게 올라가면 점프가 아님 (초)
         self.max_amplitude = max_amplitude  # 이보다 크면 추적 오류로 간주
         self.smoothing = smoothing          # EMA 계수 (1이면 평활화 없음)
         self.lost_timeout = lost_timeout    # 이 시간 이상 사람이 안 보이면 상태 초기화
+        self.coherence = coherence          # 머리/엉덩이 상승량이 몸통 상승량의 이 비율 이상이어야 점프
         self.history = deque()              # (t, 높이) 그래프용
         self._history_seconds = history_seconds
         self.reset()
@@ -115,6 +126,7 @@ class JumpCounter:
     # ----------------------------------------------------------------- 상태
     def reset(self):
         self.count = 0
+        self.rejected = 0            # 머리/엉덩이가 함께 안 움직여 걸러낸 횟수 (어깨 으쓱 등)
         self.events: list[JumpEvent] = []
         self.last_t: Optional[float] = None
         self.height = 0.0            # 현재 높이 (최근 최저점 대비, 몸통 길이 단위)
@@ -132,6 +144,7 @@ class JumpCounter:
         self._smooth = None
         self._scale = None
         self._last_seen_t = None
+        self._track = deque()         # (t, 머리 높이, 엉덩이 높이) 최근 3초, 일치 검사용
 
     # ----------------------------------------------------------------- 갱신
     def update(self, t: float, sig: Optional[BodySignal]) -> Optional[JumpEvent]:
@@ -160,6 +173,12 @@ class JumpCounter:
         else:
             self._smooth += self.smoothing * (v - self._smooth)
         v = self._smooth
+
+        # 머리/엉덩이 높이 기록 (피크 확정 시 몸통과 같이 올라갔는지 대조)
+        self._track.append((t, None if sig.head_y is None else -sig.head_y,
+                            None if sig.hip_y is None else -sig.hip_y))
+        while self._track and t - self._track[0][0] > 3.0:
+            self._track.popleft()
 
         # 그래프용 기록 (몸통 길이 단위)
         self.history.append((t, v / self._scale))
@@ -205,11 +224,31 @@ class JumpCounter:
             return None
         if self._last_peak_t is not None and peak_t - self._last_peak_t < self.min_interval:
             return None
+        if not self._coherent(self._valley_t, peak_t, peak_val - self._valley_val):
+            self.rejected += 1                  # 어깨만 올라간 것 (으쓱, 팔 동작)
+            return None
         self._last_peak_t = peak_t
         self.count += 1
         event = JumpEvent(index=self.count, t=peak_t, amplitude=amplitude, rise_time=rise_time)
         self.events.append(event)
         return event
+
+    def _sample_at(self, t: float):
+        best = None
+        for s in self._track:
+            if best is None or abs(s[0] - t) < abs(best[0] - t):
+                best = s
+        return best
+
+    def _coherent(self, t_valley: float, t_peak: float, body_rise: float) -> bool:
+        """최저점->최고점 사이에 머리 또는 엉덩이도 몸통만큼 올라갔는지. 둘 다 안 보이면 통과."""
+        a, b = self._sample_at(t_valley), self._sample_at(t_peak)
+        if a is None or b is None:
+            return True
+        rises = [b[i] - a[i] for i in (1, 2) if a[i] is not None and b[i] is not None]
+        if not rises:
+            return True
+        return max(rises) >= self.coherence * body_rise
 
     # ----------------------------------------------------------------- 조회
     @property
