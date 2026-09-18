@@ -443,13 +443,14 @@ class CounterApp:
             pending = 0 if self.counter.in_rhythm else len(self.counter.pending)
             rhythm_min = self.counter.rhythm_min
             last_reject = self.counter.last_reject
+            misses, best = self.counter.misses, self.counter.best_streak
         lms = self.worker.latest_landmarks
         if self.overlay and lms:
             draw_skeleton(img, lms)
 
         # 왼쪽 위: 점프 수 / 분당 횟수 / 시간
         flash = (t - self.flash_t) < 0.3
-        pw, ph = int(300 * s), int(190 * s)
+        pw, ph = int(300 * s), int(214 * s)
         draw_panel(img, 12, 12, 12 + pw, 12 + ph)
         put_text(img, "JUMPS", (26, 12 + int(32 * s)), 0.75 * s, (190, 190, 190), max(1, int(2 * s)))
         if pending:   # 리듬 확인 중: 후보 점프가 몇 개 모였는지 (3개가 되면 한꺼번에 반영)
@@ -460,6 +461,9 @@ class CounterApp:
         mm, ss = divmod(int(self.elapsed(t)), 60)
         put_text(img, f"{rpm:3.0f} /min    {mm:02d}:{ss:02d}", (26, 12 + int(175 * s)), 0.8 * s,
                  (220, 220, 220), max(1, int(2 * s)))
+        if not self.args.lenient:   # 줄에 걸린 횟수(리듬 끊김)와 최고 연속 기록
+            put_text(img, f"miss {misses}    best {best}", (26, 12 + int(203 * s)), 0.6 * s,
+                     (0, 170, 255) if misses else (200, 200, 200), 1)
         status = (f"pose {self.worker.infer_ms:.0f} ms | {self.fps:.0f} fps | {self.args.model} | "
                   f"thr {threshold:.2f}" + (" | mirror" if self.mirror else ""))
         put_text(img, status, (14, 12 + ph + int(24 * s)), 0.55 * s, (200, 200, 200), 1)
@@ -511,6 +515,8 @@ class CounterApp:
             "started_at": self.session_started.isoformat(timespec="seconds"),
             "source": self.args.video or f"camera {self.args.camera}",
             "total_jumps": count,
+            "misses": self.counter.misses,
+            "best_streak": self.counter.best_streak,
             "duration_s": round(duration, 1),
             "avg_per_min": round(count / duration * 60, 1) if duration > 0 else 0.0,
             "params": {"model": self.args.model, "threshold": self.counter.threshold,
@@ -527,10 +533,13 @@ class CounterApp:
         with self.lock:
             count = self.counter.count
             rejected = dict(self.counter.rejected)
+            misses, best = self.counter.misses, self.counter.best_streak
         duration = self.elapsed(self.t_last)
         mm, ss = divmod(int(duration), 60)
         per_min = count / duration * 60 if duration > 0 else 0.0
         lines = [f"점프 {count}회 / {mm:02d}:{ss:02d} / 평균 {per_min:.0f}회/분"]
+        if not self.args.lenient:
+            lines.append(f"걸림 {misses}회, 최고 연속 {best}회")
         if any(rejected.values()):
             lines.append(f"걸러냄: 발 안 뜸 {rejected['feet']}, 제자리 아님 {rejected['motion']}, "
                          f"리듬 없음 {rejected['rhythm']}")
