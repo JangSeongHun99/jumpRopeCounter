@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>줄넘기 카운터</title>
+<style>
+  :root { --bg:#0f1115; --panel:rgba(12,14,18,.72); --fg:#f4f5f7; --dim:#a9adb5; --accent:#4ade80; --warn:#fbbf24; --blue:#60a5fa; }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:-apple-system, "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif; overscroll-behavior:none; }
+  button { font:inherit; border:0; border-radius:14px; padding:14px 22px; font-size:19px; font-weight:700; cursor:pointer; }
+  button.primary { background:var(--accent); color:#0b1a10; }
+  button.secondary { background:#2b3038; color:var(--fg); }
+  button.danger { background:#ef4444; color:#fff; }
+  button:disabled { opacity:.5; }
+  input[type=text], select { font:inherit; font-size:19px; padding:12px 14px; border-radius:12px; border:1px solid #3a3f48; background:#1a1d23; color:var(--fg); width:100%; }
+  label.row { display:flex; align-items:center; gap:10px; font-size:17px; color:var(--dim); margin:8px 0; }
+
+  #setup { max-width:560px; margin:0 auto; padding:28px 20px 40px; display:flex; flex-direction:column; gap:18px; }
+  #setup h1 { margin:0; font-size:30px; }
+  #setup .card { background:#171a20; border-radius:16px; padding:16px 18px; }
+  #setup .card h2 { margin:0 0 10px; font-size:18px; color:var(--dim); font-weight:600; }
+  #setup ol { margin:0; padding-left:20px; line-height:1.7; font-size:17px; }
+  #setup .grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  #records { font-size:15px; color:var(--dim); max-height:180px; overflow:auto; }
+  #records div { padding:4px 0; border-bottom:1px solid #22262e; }
+  #status { color:var(--warn); font-size:16px; min-height:1.4em; }
+
+  #live { position:fixed; inset:0; display:none; }
+  #stage { position:absolute; inset:0; background:#000; }
+  #video, #overlay { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%) scaleX(-1); }
+  #video.nomirror, #overlay.nomirror { transform:translate(-50%,-50%); }
+  #hud { position:absolute; inset:0; pointer-events:none; }
+  #counterBox { position:absolute; left:14px; top:calc(14px + env(safe-area-inset-top)); background:var(--panel); border-radius:18px; padding:12px 18px; min-width:190px; }
+  #counterBox .lbl { font-size:15px; color:var(--dim); letter-spacing:.08em; }
+  #count { font-size:96px; font-weight:800; line-height:1; margin:2px 0 4px; font-variant-numeric:tabular-nums; transition:transform .12s; }
+  #count.flash { color:var(--accent); transform:scale(1.08); }
+  #sub { font-size:18px; color:#dfe2e8; font-variant-numeric:tabular-nums; }
+  #miss { font-size:16px; color:var(--dim); margin-top:2px; }
+  #miss.has { color:var(--warn); }
+  #starting { color:var(--blue); font-size:16px; }
+  #reason { position:absolute; left:14px; top:calc(230px + env(safe-area-inset-top)); background:rgba(251,191,36,.9); color:#1a1200; font-weight:700; border-radius:10px; padding:6px 10px; font-size:15px; display:none; }
+  #timer { position:absolute; right:14px; top:calc(14px + env(safe-area-inset-top)); background:var(--panel); border-radius:14px; padding:10px 16px; font-size:30px; font-weight:800; font-variant-numeric:tabular-nums; }
+  #graph { position:absolute; left:14px; right:14px; bottom:calc(92px + env(safe-area-inset-bottom)); height:72px; background:var(--panel); border-radius:12px; }
+  #msg { position:absolute; left:0; right:0; top:45%; text-align:center; font-size:22px; font-weight:700; color:var(--warn); text-shadow:0 2px 6px #000; padding:0 20px; }
+  #controls { position:absolute; left:0; right:0; bottom:0; padding:14px 14px calc(14px + env(safe-area-inset-bottom)); display:flex; gap:12px; justify-content:center; }
+  #controls button { min-width:140px; font-size:22px; padding:16px 26px; }
+
+  #resultModal { position:fixed; inset:0; background:rgba(0,0,0,.85); display:none; overflow:auto; z-index:10; }
+  #resultModal .sheet { max-width:640px; margin:20px auto; background:#171a20; border-radius:18px; padding:20px; display:flex; flex-direction:column; gap:14px; }
+  #resultModal h2 { margin:0; font-size:24px; }
+  #cardImg { width:100%; border-radius:12px; background:#fff; display:block; }
+  .hint { color:var(--dim); font-size:15px; }
+  .btnrow { display:flex; gap:10px; flex-wrap:wrap; }
+  .btnrow button { flex:1; min-width:140px; }
+  #loading { position:fixed; inset:0; background:rgba(0,0,0,.8); display:none; align-items:center; justify-content:center; flex-direction:column; gap:14px; font-size:20px; z-index:20; text-align:center; padding:20px; }
+</style>
+</head>
+<body>
+
+<div id="setup">
+  <h1>줄넘기 카운터</h1>
+  <div class="card">
+    <h2>사용법</h2>
+    <ol>
+      <li>아이패드를 세워 두고 카메라에서 2~3 m 떨어져 서세요. 어깨부터 발까지 다 보이면 가장 정확합니다.</li>
+      <li>아이패드의 <b>센터 스테이지</b>(카메라가 사람을 따라 움직이는 기능)는 꺼 주세요. 제어 센터의 비디오 효과에서 끘 수 있습니다.</li>
+      <li><b>시작</b>을 누르고 줄넘기를 하세요. 처음 3번은 "리듬 확인"으로 잠시 표시되다가 한꺼번에 반영됩니다.</li>
+      <li>다 하면 <b>정지</b>를 누르고 이름을 적어 결과지를 이미지로 저장하세요.</li>
+    </ol>
+  </div>
+  <div class="card">
+    <h2>설정</h2>
+    <div class="grid">
+      <div><label class="row" for="timerSel">제한 시간</label>
+        <select id="timerSel"><option value="0">자유 (정지 누를 때까지)</option><option value="30">30초</option><option value="60">1분</option><option value="120">2분</option><option value="180">3분</option></select></div>
+      <div><label class="row" for="modelSel">포즈 모델</label>
+        <select id="modelSel"><option value="lite">lite (빠름)</option><option value="full" selected>full (기본)</option></select></div>
+    </div>
+    <label class="row"><input type="checkbox" id="lenientChk"> 오작동 방지 검사 끄기 (몸이 오르내린 횟수만 셈)</label>
+    <label class="row"><input type="checkbox" id="rearChk"> 후면 카메라 사용</label>
+  </div>
+  <button class="primary" id="startBtn" style="font-size:24px; padding:18px;">시작</button>
+  <div id="status"></div>
+  <div class="card">
+    <h2>최근 기록 (이 기기)</h2>
+    <div id="records">아직 없음</div>
+    <div class="btnrow" style="margin-top:10px"><button class="secondary" id="csvBtn">CSV 내려받기</button><button class="secondary" id="clearBtn">기록 지우기</button></div>
+  </div>
+  <div class="hint">영상은 이 기기 안에서만 처리되고 어디로도 전송되지 않습니다. 포즈 인식: MediaPipe.</div>
+</div>
+
+<div id="live">
+  <div id="stage">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas id="overlay"></canvas>
+    <div id="hud">
+      <div id="counterBox">
+        <div class="lbl">JUMPS <span id="starting"></span></div>
+        <div id="count">0</div>
+        <div id="sub"><span id="rpm">0</span> /분 &nbsp; <span id="elapsed">00:00</span></div>
+        <div id="miss">걸림 0 · 최고 연속 0</div>
+      </div>
+      <div id="reason"></div>
+      <div id="timer" style="display:none">01:00</div>
+      <canvas id="graph"></canvas>
+      <div id="msg"></div>
+    </div>
+  </div>
+  <div id="controls">
+    <button class="secondary" id="resetBtn">다시 0부터</button>
+    <button class="danger" id="stopBtn">정지</button>
+  </div>
+</div>
+
+<div id="resultModal">
+  <div class="sheet">
+    <h2>결과 저장</h2>
+    <div class="grid" style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">
+      <div><label class="row" for="nameIn">이름</label><input type="text" id="nameIn" placeholder="예: 김민준" autocomplete="off"></div>
+      <div><label class="row" for="classIn">반 / 번호 (선택)</label><input type="text" id="classIn" placeholder="예: 3-2 / 12번" autocomplete="off"></div>
+    </div>
+    <label class="row"><input type="checkbox" id="photoChk" checked> 정지 순간 사진을 결과지에 넣기</label>
+    <img id="cardImg" alt="결과지 미리보기">
+    <div class="hint">아이패드에서는 위 이미지를 길게 눌러 "사진에 저장"을 해도 됩니다.</div>
+    <div class="btnrow">
+      <button class="primary" id="shareBtn">이미지 저장 / 공유</button>
+      <button class="secondary" id="downloadBtn">다운로드</button>
+    </div>
+    <div class="btnrow">
+      <button class="secondary" id="againBtn">같은 설정으로 다시</button>
+      <button class="secondary" id="homeBtn">처음 화면으로</button>
+    </div>
+  </div>
+</div>
+
+<div id="loading"><div id="loadingText">준비 중...</div></div>
+
+<script src="jump_counter.js"></script>
+<script type="module">
+import { FilesetResolver, PoseLandmarker } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@1.0.1/vision_bundle.mjs";
+
+const MP_VERSION = "1.0.1";
+const WASM_URL = `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MP_VERSION}/wasm`;
+const MODEL_URL = (m) => `https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_${m}/float16/latest/pose_landmarker_${m}.task`;
+const BODY_CONNECTIONS = [[11,12],[11,13],[13,15],[12,14],[14,16],[11,23],[12,24],[23,24],[23,25],[25,27],[24,26],[26,28],[27,29],[29,31],[27,31],[28,30],[30,32],[28,32],[15,17],[15,19],[15,21],[17,19],[16,18],[16,20],[16,22],[18,20]];
+const { JumpCounter, extractSignal } = JumpCounterLib;
+
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const TEST_VIDEO = params.get("video");          // 테스트용: 카메라 대신 영상 파일 (?video=경로)
+const AUTO = params.get("auto") === "1";         // 테스트용: 영상이 끝나면 결과를 콘솔에 출력
+const STEP_FPS = parseFloat(params.get("step") || "0");   // 테스트용: 재생 대신 1/step 초 간격으로 프레임을 넘기며 처리 (느린 환경)
+const DELEGATE = params.get("delegate") || "GPU";          // 테스트용: GPU/CPU
+
+let landmarker = null, landmarkerModel = null;
+let counter = null, running = false, stream = null, wakeLock = null;
+let t0 = 0, firstJumpT = null, lastFrameTs = -1, inferMs = 0, frames = 0;
+let flashUntil = 0, timerLimit = 0, timerDone = false;
+let snapshot = null, cardBlob = null, cardCanvas = null, lastResult = null;
+const video = $("video"), overlay = $("overlay"), graph = $("graph");
+const octx = overlay.getContext("2d"), gctx = graph.getContext("2d");
+
+// ------------------------------------------------------------ 기록 (이 기기)
+function loadRecords() { try { return JSON.parse(localStorage.getItem("jr_records") || "[]"); } catch (e) { return []; } }
+function saveRecords(r) { try { localStorage.setItem("jr_records", JSON.stringify(r.slice(-200))); } catch (e) {} }
+function renderRecords() {
+  const r = loadRecords();
+  $("records").innerHTML = r.length ? r.slice().reverse().slice(0, 30).map((x) =>
+    `<div>${x.date} · <b>${x.name || "(이름 없음)"}</b> ${x.cls ? "(" + x.cls + ")" : ""} · ${x.count}회 · ${fmtTime(x.duration)} · 걸림 ${x.misses} · 최고 연속 ${x.best}</div>`).join("") : "아직 없음";
+}
+$("csvBtn").onclick = () => {
+  const r = loadRecords();
+  const rows = [["date", "name", "class", "count", "duration_s", "per_min", "misses", "best_streak"]]
+    .concat(r.map((x) => [x.date, x.name, x.cls, x.count, x.duration, x.perMin, x.misses, x.best]));
+  const csv = "﻿" + rows.map((row) => row.map((c) => `"${String(c ?? "").replace(/"/g, '""')}"`).join(",")).join("\n");
+  downloadBlob(new Blob([csv], { type: "text/csv" }), "jumprope_records.csv");
+};
+$("clearBtn").onclick = () => { if (confirm("이 기기의 기록을 모두 지울까요?")) { saveRecords([]); renderRecords(); } };
+renderRecords();
+
+function fmtTime(s) { s = Math.max(0, Math.floor(s)); return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`; }
+function nowDate() { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; }
+function downloadBlob(blob, name) {
+  const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 2000);
+}
+
+// ------------------------------------------------------------ 모델
+async function ensureLandmarker(model) {
+  if (landmarker && landmarkerModel === model) return landmarker;
+  if (landmarker) { landmarker.close(); landmarker = null; }
+  $("loadingText").textContent = "포즈 모델을 준비하는 중... (처음 한 번은 몇 초 걸립니다)";
+  const fileset = await FilesetResolver.forVisionTasks(WASM_URL);
+  const make = (delegate) => PoseLandmarker.createFromOptions(fileset, {
+    baseOptions: { modelAssetPath: MODEL_URL(model), delegate },
+    runningMode: "VIDEO", numPoses: 1,
+    minPoseDetectionConfidence: 0.5, minPosePresenceConfidence: 0.5, minTrackingConfidence: 0.5,
+  });
+  try { landmarker = await make(DELEGATE); }
+  catch (e) { console.warn("GPU delegate failed, using CPU", e); landmarker = await make("CPU"); }
+  landmarkerModel = model;
+  return landmarker;
+}
+
+// ------------------------------------------------------------ 카메라
+async function openCamera() {
+  if (TEST_VIDEO) {
+    video.classList.add("nomirror"); overlay.classList.add("nomirror");
+    video.src = TEST_VIDEO; video.loop = false;
+    if (STEP_FPS) { await new Promise((r) => { video.onloadeddata = r; video.load(); }); video.pause(); }
+    else await video.play();
+    return;
+  }
+  const facing = $("rearChk").checked ? "environment" : "user";
+  const constraints = { audio: false, video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 }, frameRate: { ideal: 30 } } };
+  stream = await navigator.mediaDevices.getUserMedia(constraints);
+  video.srcObject = stream;
+  if (facing === "environment") { video.classList.add("nomirror"); overlay.classList.add("nomirror"); }
+  else { video.classList.remove("nomirror"); overlay.classList.remove("nomirror"); }
+  await video.play();
+}
+function closeCamera() {
+  if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  video.srcObject = null;
+}
+async function requestWakeLock() {
+  try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible" && running) requestWakeLock(); });
+
+function layout() {
+  const sw = $("stage").clientWidth, sh = $("stage").clientHeight;
+  const vw = video.videoWidth || 1280, vh = video.videoHeight || 720;
+  const s = Math.min(sw / vw, sh / vh);
+  const w = Math.round(vw * s), h = Math.round(vh * s);
+  video.style.width = w + "px"; video.style.height = h + "px";
+  overlay.style.width = w + "px"; overlay.style.height = h + "px";
+  overlay.width = vw; overlay.height = vh;
+}
+window.addEventListener("resize", layout);
+
+// ------------------------------------------------------------ 프레임 처리
+async function stepThroughVideo() {   // 테스트 전용: 프레임 단위로 seek 하며 처리 (재생 속도와 무관)
+  const dur = video.duration;
+  for (let i = 0; running && i / STEP_FPS < dur; i++) {
+    video.currentTime = i / STEP_FPS;
+    await new Promise((r) => { video.onseeked = r; });
+    processFrame(video.currentTime * 1000);
+  }
+  if (running) stopSession();
+}
+
+function processFrame(ts) {
+    lastFrameTs = ts;
+    const t = (ts - t0) / 1000;
+    const a = performance.now();
+    let lms = null;
+    try {
+      const res = landmarker.detectForVideo(video, Math.round(ts));
+      lms = res.landmarks && res.landmarks.length ? res.landmarks[0] : null;
+    } catch (e) { console.warn(e); }
+    const dt = performance.now() - a;
+    inferMs = frames === 0 ? dt : inferMs * 0.9 + dt * 0.1;
+    frames++;
+    const sig = lms ? extractSignal(lms, overlay.width, overlay.height) : null;
+    const events = counter.update(t, sig);
+    if (events.length) {
+      flashUntil = performance.now() + 300;
+      if (firstJumpT === null) firstJumpT = events[0].t;
+    }
+    drawOverlay(lms);
+    updateHud(t);
+    if (timerLimit && firstJumpT !== null && !timerDone && t - firstJumpT >= timerLimit) { timerDone = true; stopSession(); }
+}
+
+function onFrame() {
+  if (!running) return;
+  const ts = TEST_VIDEO ? video.currentTime * 1000 : performance.now();
+  if (video.readyState >= 2 && ts > lastFrameTs) processFrame(ts);
+  if (!running) return;
+  if ("requestVideoFrameCallback" in video) video.requestVideoFrameCallback(onFrame);
+  else requestAnimationFrame(onFrame);
+}
+
+function drawOverlay(lms) {
+  const w = overlay.width, h = overlay.height;
+  octx.clearRect(0, 0, w, h);
+  if (!lms) return;
+  const p = lms.map((l) => [l.x * w, l.y * h, l.visibility ?? 1]);
+  octx.lineWidth = Math.max(2, h / 240); octx.strokeStyle = "#ffc832"; octx.lineCap = "round";
+  for (const [a, b] of BODY_CONNECTIONS) {
+    if (p[a][2] < 0.5 || p[b][2] < 0.5) continue;
+    octx.beginPath(); octx.moveTo(p[a][0], p[a][1]); octx.lineTo(p[b][0], p[b][1]); octx.stroke();
+  }
+  octx.fillStyle = "#fff";
+  for (let i = 11; i < 33; i++) if (p[i][2] >= 0.5) { octx.beginPath(); octx.arc(p[i][0], p[i][1], Math.max(3, h / 200), 0, Math.PI * 2); octx.fill(); }
+}
+
+function updateHud(t) {
+  const c = counter;
+  $("count").textContent = c.count;
+  $("count").classList.toggle("flash", performance.now() < flashUntil);
+  $("rpm").textContent = Math.round(c.cadence(t));
+  $("elapsed").textContent = fmtTime(firstJumpT === null ? 0 : t - firstJumpT);
+  $("miss").textContent = `걸림 ${c.misses} · 최고 연속 ${c.bestStreak}`;
+  $("miss").classList.toggle("has", c.misses > 0);
+  const pend = c.inRhythm ? 0 : c.pending.length;
+  $("starting").textContent = pend ? `리듬 확인 ${pend}/${c.rhythmMin}` : "";
+  const r = c.lastReject;
+  if (r && t - r[0] < 2.0 && !c.lenient) { $("reason").style.display = "block"; $("reason").textContent = "안 셈: " + r[1]; }
+  else $("reason").style.display = "none";
+  $("msg").textContent = c.tracking ? "" : "사람이 보이지 않아요. 카메라에서 떨어져 어깨~발이 보이게 서 주세요.";
+  if (timerLimit) $("timer").textContent = fmtTime(firstJumpT === null ? timerLimit : Math.max(0, timerLimit - (t - firstJumpT)));
+  drawGraph(t);
+}
+
+function drawGraph(t) {
+  const w = graph.width = graph.clientWidth * (devicePixelRatio || 1), h = graph.height = graph.clientHeight * (devicePixelRatio || 1);
+  gctx.clearRect(0, 0, w, h);
+  const win = 6.0, tStart = t - win;
+  const pts = counter.history.filter((p) => p[0] >= tStart);
+  gctx.fillStyle = "#a9adb5"; gctx.font = `${Math.round(11 * (devicePixelRatio || 1))}px sans-serif`;
+  gctx.fillText(`몸 높이 (최근 6초)  · 추론 ${inferMs.toFixed(0)} ms`, 8, 14 * (devicePixelRatio || 1));
+  if (pts.length < 2) return;
+  const vals = pts.map((p) => p[1]);
+  let vmin = Math.min(...vals), vmax = Math.max(...vals);
+  const rng = Math.max(vmax - vmin, counter.threshold * 3), lo = (vmax + vmin) / 2 - rng / 2;
+  const X = (tt) => 8 + (tt - tStart) / win * (w - 16), Y = (v) => h - 6 - (v - lo) / rng * (h - 26);
+  gctx.strokeStyle = "#38bdf8"; gctx.lineWidth = 2 * (devicePixelRatio || 1); gctx.beginPath();
+  pts.forEach((p, i) => (i ? gctx.lineTo(X(p[0]), Y(p[1])) : gctx.moveTo(X(p[0]), Y(p[1])))); gctx.stroke();
+  gctx.strokeStyle = "#4ade80"; gctx.lineWidth = 1 * (devicePixelRatio || 1);
+  for (const e of counter.events.slice(-60)) if (e.t >= tStart) { gctx.beginPath(); gctx.moveTo(X(e.t), 18 * (devicePixelRatio || 1)); gctx.lineTo(X(e.t), h - 4); gctx.stroke(); }
+}
+
+// ------------------------------------------------------------ 세션
+async function startSession() {
+  $("status").textContent = "";
+  $("loading").style.display = "flex";
+  try {
+    await ensureLandmarker($("modelSel").value);
+    $("loadingText").textContent = "카메라를 켜는 중...";
+    await openCamera();
+  } catch (e) {
+    $("loading").style.display = "none";
+    $("status").textContent = "시작할 수 없습니다: " + (e && e.message ? e.message : e) + " (카메라 허용을 확인하고, 사파리 최신 버전인지 확인하세요)";
+    console.error(e);
+    return;
+  }
+  $("loading").style.display = "none";
+  $("setup").style.display = "none";
+  $("live").style.display = "block";
+  layout();
+  counter = new JumpCounter({ lenient: $("lenientChk").checked });
+  timerLimit = parseInt($("timerSel").value, 10) || 0;
+  $("timer").style.display = timerLimit ? "block" : "none";
+  if (timerLimit) $("timer").textContent = fmtTime(timerLimit);
+  t0 = TEST_VIDEO ? 0 : performance.now();
+  firstJumpT = null; lastFrameTs = -1; frames = 0; inferMs = 0; timerDone = false; running = true;
+  await requestWakeLock();
+  if (TEST_VIDEO && STEP_FPS) { stepThroughVideo(); return; }
+  if (TEST_VIDEO) video.onended = () => stopSession();
+  onFrame();
+}
+
+function resetSession() {
+  counter.reset(); firstJumpT = null; timerDone = false;
+  if (timerLimit) $("timer").textContent = fmtTime(timerLimit);
+}
+
+function stopSession() {
+  if (!running) return;
+  running = false;
+  // 정지 순간 사진 (미러 상태 그대로)
+  try {
+    const sc = document.createElement("canvas"); sc.width = video.videoWidth; sc.height = video.videoHeight;
+    const cx = sc.getContext("2d");
+    if (!video.classList.contains("nomirror")) { cx.translate(sc.width, 0); cx.scale(-1, 1); }
+    cx.drawImage(video, 0, 0);
+    snapshot = sc;
+  } catch (e) { snapshot = null; }
+  const t = counter.lastT || 0;
+  const duration = firstJumpT === null ? 0 : (timerLimit && timerDone ? timerLimit : t - firstJumpT);
+  lastResult = {
+    date: nowDate(), count: counter.count, misses: counter.misses, best: counter.bestStreak,
+    duration: Math.round(duration * 10) / 10,
+    perMin: duration > 0 ? Math.round(counter.count / duration * 60) : 0,
+    timer: timerLimit, events: counter.events.map((e) => Math.round((e.t - (firstJumpT ?? 0)) * 100) / 100),
+    inferMs: Math.round(inferMs), frames,
+  };
+  if (wakeLock) { wakeLock.release().catch(() => {}); wakeLock = null; }
+  closeCamera();
+  if (AUTO) { console.log("RESULT " + JSON.stringify(lastResult)); document.title = "RESULT " + lastResult.count; }
+  openResult();
+}
+
+// ------------------------------------------------------------ 결과지
+function openResult() {
+  $("resultModal").style.display = "block";
+  renderCard();
+}
+async function renderCard() {
+  const r = lastResult; if (!r) return;
+  const name = $("nameIn").value.trim(), cls = $("classIn").value.trim();
+  const usePhoto = $("photoChk").checked && snapshot;
+  const W = 1080, H = 1440, c = document.createElement("canvas"); c.width = W; c.height = H;
+  const x = c.getContext("2d");
+  x.fillStyle = "#ffffff"; x.fillRect(0, 0, W, H);
+  x.fillStyle = "#16a34a"; x.fillRect(0, 0, W, 150);
+  x.fillStyle = "#fff"; x.font = "bold 56px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"; x.textBaseline = "middle";
+  x.fillText("줄넘기 기록", 56, 75);
+  x.font = "28px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"; x.textAlign = "right";
+  x.fillText(r.date, W - 56, 75); x.textAlign = "left";
+  // 이름
+  x.fillStyle = "#111827"; x.font = "bold 52px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  x.fillText(name || "이름: ______", 56, 230);
+  x.fillStyle = "#6b7280"; x.font = "30px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  if (cls) x.fillText(cls, 56, 285);
+  // 큰 숫자
+  const bigY = usePhoto ? 470 : 520;
+  x.fillStyle = "#16a34a"; x.font = "bold 260px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  x.textAlign = "center"; x.fillText(String(r.count), usePhoto ? 330 : W / 2, bigY);
+  x.fillStyle = "#374151"; x.font = "bold 40px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  x.fillText("회", usePhoto ? 330 : W / 2, bigY + 170); x.textAlign = "left";
+  if (usePhoto) {
+    const pw = 400, ph = Math.round(pw * snapshot.height / snapshot.width);
+    const px = W - 56 - pw, py = 330;
+    x.save(); x.beginPath(); x.roundRect(px, py, pw, Math.min(ph, 520), 20); x.clip();
+    x.drawImage(snapshot, px, py, pw, ph); x.restore();
+  }
+  // 통계 상자
+  const stats = [["시간", fmtTime(r.duration)], ["분당", `${r.perMin}회`], ["걸림", `${r.misses}회`], ["최고 연속", `${r.best}회`]];
+  const bx = 56, by = 900, bw = (W - 112 - 3 * 20) / 4, bh = 150;
+  stats.forEach(([k, v], i) => {
+    const sx = bx + i * (bw + 20);
+    x.fillStyle = "#f3f4f6"; x.beginPath(); x.roundRect(sx, by, bw, bh, 18); x.fill();
+    x.fillStyle = "#6b7280"; x.font = "28px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif"; x.textAlign = "center";
+    x.fillText(k, sx + bw / 2, by + 42);
+    x.fillStyle = "#111827"; x.font = "bold 46px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+    x.fillText(v, sx + bw / 2, by + 100); x.textAlign = "left";
+  });
+  // 점프 타임라인
+  x.fillStyle = "#6b7280"; x.font = "26px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  x.fillText(r.timer ? `제한 시간 ${fmtTime(r.timer)} 동안의 점프` : "점프 시각", 56, 1110);
+  x.fillStyle = "#e5e7eb"; x.beginPath(); x.roundRect(56, 1135, W - 112, 60, 12); x.fill();
+  const span = Math.max(r.duration, 1);
+  x.fillStyle = "#16a34a";
+  for (const et of r.events) { const ex = 56 + 10 + (et / span) * (W - 132); x.fillRect(ex - 2, 1145, 4, 40); }
+  x.fillStyle = "#9ca3af"; x.font = "24px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  x.fillText("0초", 56, 1225); x.textAlign = "right"; x.fillText(`${Math.round(span)}초`, W - 56, 1225); x.textAlign = "left";
+  x.fillStyle = "#9ca3af"; x.font = "22px -apple-system, 'Apple SD Gothic Neo', 'Malgun Gothic', sans-serif";
+  x.fillText("줄넘기 카운터 · 카메라 포즈 인식으로 자동 측정 (걸림은 리듬 끊김으로 추정)", 56, 1390);
+  cardCanvas = c;
+  cardBlob = await new Promise((res) => c.toBlob(res, "image/png"));
+  $("cardImg").src = URL.createObjectURL(cardBlob);
+}
+function cardFileName() {
+  const name = $("nameIn").value.trim() || "결과";
+  return `줄넘기_${name}_${lastResult.date.replace(/[: ]/g, "-")}.png`;
+}
+function persistRecord() {
+  if (!lastResult || lastResult.saved) return;
+  const r = loadRecords();
+  r.push({ date: lastResult.date, name: $("nameIn").value.trim(), cls: $("classIn").value.trim(), count: lastResult.count,
+           duration: lastResult.duration, perMin: lastResult.perMin, misses: lastResult.misses, best: lastResult.best });
+  saveRecords(r); lastResult.saved = true; renderRecords();
+}
+let renderTimer = null;
+for (const id of ["nameIn", "classIn"]) $(id).addEventListener("input", () => { clearTimeout(renderTimer); renderTimer = setTimeout(renderCard, 250); });
+$("photoChk").addEventListener("change", renderCard);
+$("shareBtn").onclick = async () => {
+  await renderCard(); persistRecord();
+  const file = new File([cardBlob], cardFileName(), { type: "image/png" });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file], title: "줄넘기 기록" }); return; } catch (e) { if (e && e.name === "AbortError") return; }
+  }
+  downloadBlob(cardBlob, cardFileName());
+};
+$("downloadBtn").onclick = async () => { await renderCard(); persistRecord(); downloadBlob(cardBlob, cardFileName()); };
+$("againBtn").onclick = () => { persistRecord(); $("resultModal").style.display = "none"; startSession(); };
+$("homeBtn").onclick = () => { persistRecord(); $("resultModal").style.display = "none"; $("live").style.display = "none"; $("setup").style.display = "flex"; };
+
+$("startBtn").onclick = startSession;
+$("stopBtn").onclick = stopSession;
+$("resetBtn").onclick = resetSession;
+if (AUTO) startSession();
+</script>
+</body>
+</html>

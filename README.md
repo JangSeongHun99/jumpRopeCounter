@@ -1,7 +1,7 @@
 # 줄넘기 카운터 (노트북 카메라)
 
 노트북 웹캠 앞에서 줄넘기를 하면 몇 번 넘었는지 실시간으로 세어 주는 프로그램입니다.
-MediaPipe 포즈 추정으로 몸통의 위아래 움직임을 추적하고, 몸이 한 번 뜰 때마다 1회를 셉니다.
+MediaPipe 포즈 추정으로 몸통의 위아래 움직임을 추적하고, 몸이 한 번 뜠 때마다 1회를 셉니다.
 
 참고한 프로젝트: [AyushTCD/VisionBasedJumpRopeCounter](https://github.com/AyushTCD/VisionBasedJumpRopeCounter)
 (동영상 파일 전용 Jupyter 노트북, 구 `mp.solutions` API). 이 프로젝트는 그 아이디어를
@@ -11,8 +11,46 @@ MediaPipe 포즈 추정으로 몸통의 위아래 움직임을 추적하고, 몸
 - 카메라 읽기 / 포즈 추론 / 화면 그리기를 별도 스레드로 분리해 추론이 느려도 화면이 끊기지 않음
 - 카메라 거리와 무관하게 동작하도록 움직임을 몸통 길이 기준으로 정규화
 - 세션 기록(CSV/JSON) 저장, 정답 영상으로 정확도를 재는 평가 도구 포함
+- **아이패드·스마트폰용 웹 버전**(`docs/`)도 있습니다. 설치 없이 사파리에서 열고, 결과지를 이미지로 저장합니다. 아래 "웹 버전" 참고.
 
-## 빠른 시작
+## 웹 버전 (아이패드·스마트폰·노트북 브라우저)
+
+`docs/index.html` 하나로 동작하는 웹 앱입니다. 같은 판정 로직(`docs/jump_counter.js`)을 JavaScript로 옮겼고,
+MediaPipe 웹 버전(`@mediapipe/tasks-vision` 1.0.1)이 브라우저 안에서 GPU(WebGL)로 포즈를 추정합니다.
+영상은 기기 밖으로 나가지 않습니다.
+
+**공개 주소로 열기 (GitHub Pages)**
+
+1. 저장소를 Public으로 바꿉니다 (Settings > General > Danger Zone > Change visibility). 무료 계정은 공개 저장소만 Pages를 쓸 수 있습니다.
+2. Settings > Pages > Build and deployment > Source: *Deploy from a branch*, Branch: `main`, Folder: `/docs` > Save.
+3. 1~2분 뒤 `https://jangseonghun99.github.io/jumpRopeCounter/` 가 열립니다. 이 주소를 학생 아이패드에 알려주면 됩니다.
+   (카메라는 HTTPS 주소에서만 켜지는데 GitHub Pages는 HTTPS입니다.)
+
+**학생 사용 흐름**
+
+1. 아이패드를 세워 두고 카메라에서 2~3 m 떨어져 어깨부터 발까지 보이게 섭니다.
+2. 아이패드의 센터 스테이지(카메라가 사람을 따라 움직이는 기능)는 제어 센터의 비디오 효과에서 끕니다.
+   켜져 있으면 몸 크기가 계속 변해서 판정이 흔들립니다.
+3. `시작`을 누릅니다. 처음 열 때 카메라 허용 창이 한 번 뜜니다. 제한 시간(자유/30초/1분/2분/3분)을 고를 수 있고,
+   제한 시간은 첫 점프부터 재기 시작해 시간이 되면 자동으로 정지합니다.
+4. 줄넘기를 하고 `정지`를 누르면 결과 화면이 뜩니다. 이름(과 반/번호)을 적으면 결과지 미리보기가 바로 갱신됩니다.
+   결과지에는 횟수, 시간, 분당 횟수, 걸린 횟수, 최고 연속, 정지 순간 사진(끓 수 있음), 점프 시각 표시가 들어갑니다.
+5. `이미지 저장 / 공유`를 누르면 아이패드 공유 시트에서 "이미지 저장"으로 사진 앱에 저장되고, 미리보기 이미지를
+   길게 눌러 저장해도 됩니다. 저장한 결과는 그 기기의 "최근 기록"에도 남고 CSV로 내려받을 수 있습니다.
+
+**확인된 것**
+
+- 판정 로직 이식: 합성 테스트 23개가 Python과 같은 결과 (`node docs/test_counter.js`), 참고 영상 5개의 포즈 데이터로도
+  Python과 카운트가 완전히 동일.
+- 브라우저 안 전체 파이프라인: 헤드리스 Chrome에서 참고 영상(정답 56회)을 프레임 단위로 처리해 56회.
+  GPU 없는 헤드리스 환경의 CPU 추론이 프레임당 58 ms였으니 실제 아이패드(GPU)는 이보다 빠릅니다.
+- 실제 아이패드 카메라로는 아직 확인하지 못했습니다. 한 대로 먼저 열어 보세요. 학교 관리 아이패드는
+  카메라·사파리 권한이 막혀 있을 수 있습니다.
+
+**테스트용 주소 파라미터**: `?video=파일.mp4&auto=1` (카메라 대신 영상), `&step=30` (재생 대신 프레임 단위 처리),
+`&delegate=CPU` (GPU 대신 CPU). 예: `python -m http.server 8765` 후 `http://localhost:8765/docs/index.html?video=/영상.mp4&auto=1&step=30`.
+
+## 빠른 시작 (노트북, Python 버전)
 
 1. 코드를 받습니다. 저장소 페이지 https://github.com/JangSeongHun99/jumpRopeCounter 에서
    `Code > Download ZIP`으로 내려받아 풀거나, 터미널에서 `git clone https://github.com/JangSeongHun99/jumpRopeCounter.git`
@@ -36,7 +74,7 @@ python -m venv .venv
 python jump_rope_counter.py                    기본 카메라(0번)
 python jump_rope_counter.py --camera 1         다른 카메라
 python jump_rope_counter.py --list-cameras     연결된 카메라 번호 찾기
-python jump_rope_counter.py --video 영상.mp4    녹화된 영상 분석
+python jump_rope_counter.py --video 영상.mp4    록화된 영상 분석
 python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없이 점프마다 한 줄 출력
 ```
 
@@ -77,14 +115,14 @@ python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없�
 
 1. MediaPipe Pose가 프레임마다 33개 관절 위치를 추정합니다.
 2. 어깨 중점의 세로 위치를 신호로 씁니다. 화면 밖으로 추정된 관절은 무시하므로, 엉덩이가 화면 아래
-   가장자리에 걸쳐도 신호가 튀지 않습니다.
+   가장자리에 걸쳋도 신호가 튀지 않습니다.
 3. 어깨 중점 ~ 엉덩이 중점 거리(몸통 길이, 엉덩이가 안 보이면 어깨 너비의 1.25배)로 나눠
    카메라와의 거리에 무관한 단위로 바꿉니다.
 4. 히스테리시스 피크 검출: 최저점에서 threshold 이상 올라가면 상승, 최고점에서 threshold 이상
    내려오면 점프 1회로 확정합니다. 기준선이 없어서 사람이 앞뒤로 움직여도 잘못 세지 않습니다.
-5. 0.2초보다 촘촘한 피크, 0.5초보다 느린 상승(앉았다 일어나기), 몸통 길이 1.5배가 넘는
+5. 0.2초보다 춘춘한 피크, 0.5초보다 느린 상승(앉았다 일어나기), 몸통 길이 1.5배가 넘는
    진폭(추적 튐)은 버립니다.
-6. 실제로 몸이 떴는지 확인합니다. 발목이 잘 보이면 최저점에서 최고점 사이에 한 발이라도 몸통 길이의
+6. 실제로 몸이 뜌는지 확인합니다. 발목이 잘 보이면 최저점에서 최고점 사이에 한 발이라도 몸통 길이의
    3% 이상 올라가야 점프로 인정하므로, 발이 땅에 붙은 채 무릎만 굽혔다 펴거나 어깨를 으쓱하는 동작은
    세지 않습니다. 발이 안 보이면(상반신만 촬영) 머리(코·귀)나 엉덩이가 몸통 상승량의 절반 이상
    같이 올라갔는지로 대신합니다.
@@ -95,7 +133,7 @@ python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없�
    `2/3`이 표시됨). 리듬이 잡힌 뒤에는 최근 주기와 비슷한 간격(0.65~1.5배)으로 오는 점프만 바로 세고,
    간격이 크게 어긋나거나 2초 넘게 쉬면 다시 3회부터 확인합니다.
    자세 바꾸기, 몸 흔들기, 한두 번 튕기기, 걸린 뒤 허둥대는 걸음 같은 산발적 움직임은 여기서 걸러집니다.
-9. 줄에 걸린 시도를 뺍니다. 줄은 30fps 웹캠에 보이지 않아 직접 확인할 수 없지만, 걸리면 반드시 리듬이
+9. 줄에 걸린 시도를 뿐니다. 줄은 30fps 웹캠에 보이지 않아 직접 확인할 수 없지만, 걸리면 반드시 리듬이
    끊깁니다. 점프 간격이 1.2초(또는 점프 주기의 1.8배 중 큰 쪽) 넘게 비었다가 다시 리듬이 잡히면 그 직전
    점프(걸린 시도)를 1회 빼고 `miss`를 1 올리며, 최고 연속 기록(`best`)도 따로 셉니다. 걸린 줄을 풀고
    다시 돌리는 데 최소 1초 남짓 걸리고, 박자 하나 놓치는 멈칫은 주기의 2배 안쪽이라 이 기준으로 구분합니다
@@ -107,7 +145,7 @@ python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없�
 
 ## 정확도
 
-참고 저장소의 테스트 영상과 Kinovea 정답 파일로 잰 결과입니다 (`tools/evaluate.py`).
+참고 저장소의 테스트 영상과 Kinovea 정답 파일로 재 결과입니다 (`tools/evaluate.py`).
 모델 lite / full / heavy 모두 같은 카운트가 나왔고, threshold 0.03 ~ 0.08 범위에서 결과가 같았습니다.
 
 | 영상 | 정답 | 검출 | 비고 |
@@ -115,7 +153,7 @@ python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없�
 | Normal Jump 1 | 56 | 56 | |
 | Normal Jump 2 | 78 | 77 | 정답 표시 3개가 0.16초 간격으로 붙어 있는 구간에서 1개 차이 |
 
-하이니·점핑잭처럼 다른 방식으로 뛰어도 몸이 뜬 횟수를 그대로 셉니다.
+하이니·점핑잭처럼 다른 방식으로 뛰어도 몸이 뜨 횟수를 그대로 셉니다.
 
 ## 성능
 
@@ -131,7 +169,7 @@ python jump_rope_counter.py --video 영상.mp4 --no-display --verbose   창 없�
 
 - `--model lite` (약 30% 빠름, 카운트 정확도 동일)
 - `--width 640 --height 480` (카메라 전송과 화면 그리기 부담 감소)
-- 시작 후 추론이 45 ms를 넘으면 콘솔에 힌트가 뜹니다.
+- 시작 후 추론이 45 ms를 넘으면 콘솔에 힌트가 뜩니다.
 
 ## 세션 기록
 
@@ -153,13 +191,13 @@ python tools/evaluate.py 영상.mp4 --model lite full heavy
 
 ## 오작동을 줄이려면
 
-- 서서 전신(발까지)이 보이게 찍으세요. 발이 보이면 "발이 실제로 떴는지"를 기준으로 삼아 가장 정확합니다.
+- 서서 전신(발까지)이 보이게 찍으세요. 발이 보이면 "발이 실제로 뜌는지"를 기준으로 삼아 가장 정확합니다.
   무릎이나 엉덩이까지만 보여도 세지만(테스트 영상에서 전신·무릎·엉덩이·가슴 구도 모두 56/56), 발이
   안 보이면 머리 대조로 대신하므로 앉아서 몸 전체를 튕기는 동작은 걸러내지 못합니다.
 - 카메라와 2~3 m 거리를 두세요. 가까이 앉아서 몸을 앞뒤로 크게 흔들면 몸 크기 변화로 걸러집니다.
 - 처음 3회는 리듬이 확인될 때까지 화면에 `starting n/3`으로만 표시되고, 3회째에 한꺼번에 반영됩니다.
 - 점프했는데 안 세어지면 화면 왼쪽의 `not counted: ...` 문구가 이유를 알려 줍니다
-  (`feet did not lift` 발이 안 뜸, `head/hips did not rise` 머리가 같이 안 올라감, `moved sideways` 좌우 이동,
+  (`feet did not lift` 발이 안 뜨, `head/hips did not rise` 머리가 같이 안 올라감, `moved sideways` 좌우 이동,
   `moved toward/away from camera` 몸 크기 변화, `rose too slowly` 너무 느린 상승).
   `--debug`로 실행하면 후보마다 같은 내용이 콘솔에 남습니다.
 - 그래도 안 맞으면 `--lenient`로 검사를 모두 끄고 몸이 오르내린 횟수만 셀 수 있습니다.
@@ -183,5 +221,8 @@ python tools/evaluate.py 영상.mp4 --model lite full heavy
 | `pose_backend.py` | MediaPipe 모델 관리와 추론, 스켈레톤 그리기 |
 | `tools/evaluate.py` | 정확도 평가·튜닝 도구 |
 | `tools/test_counter.py` | 카운터 로직 단위 테스트 (점프 vs 으쓱·무릎 굽히기·흔들기·걷기) |
+| `docs/index.html` | 웹 버전 (아이패드·스마트폰). GitHub Pages로 공개 |
+| `docs/jump_counter.js` | 판정 로직의 JavaScript 이식 (`jump_counter.py`와 동일 동작) |
+| `docs/test_counter.js` | JavaScript 이식 단위 테스트 (`node docs/test_counter.js`) |
 | `models/` | 포즈 모델 파일 (`pose_landmarker_{lite,full,heavy}.task`) |
 | `run.bat` | 가상환경 생성 + 실행 |
