@@ -202,11 +202,10 @@ class PoseWorker(threading.Thread):
         if tuples:
             sig = extract_signal(tuples, small.shape[1], small.shape[0], source=self.source)
         with self.lock:
-            event = self.counter.update(t, sig)
+            events = self.counter.update(t, sig)
         self.latest_landmarks = tuples
-        if event is not None:
-            self.events.append(event)
-        return event
+        self.events.extend(events)
+        return events
 
 
 # ===================================================================== 그리기
@@ -433,6 +432,8 @@ class CounterApp:
             history = list(self.counter.history)
             events = self.counter.events[-80:]
             threshold = self.counter.threshold
+            pending = 0 if self.counter.in_rhythm else len(self.counter.pending)
+            rhythm_min = self.counter.rhythm_min
         lms = self.worker.latest_landmarks
         if self.overlay and lms:
             draw_skeleton(img, lms)
@@ -442,6 +443,9 @@ class CounterApp:
         pw, ph = int(300 * s), int(190 * s)
         draw_panel(img, 12, 12, 12 + pw, 12 + ph)
         put_text(img, "JUMPS", (26, 12 + int(32 * s)), 0.75 * s, (190, 190, 190), max(1, int(2 * s)))
+        if pending:   # 리듬 확인 중: 후보 점프가 몇 개 모였는지 (3개가 되면 한꺼번에 반영)
+            put_text(img, f"starting {pending}/{rhythm_min}", (26 + int(120 * s), 12 + int(32 * s)),
+                     0.6 * s, (0, 220, 255), 1)
         put_text(img, str(count), (22, 12 + int(135 * s)), (3.7 if flash else 3.3) * s,
                  (80, 255, 120) if flash else (255, 255, 255), max(2, int(7 * s)), cv2.FONT_HERSHEY_DUPLEX)
         mm, ss = divmod(int(self.elapsed(t)), 60)
@@ -509,10 +513,14 @@ class CounterApp:
     def summary_text(self) -> str:
         with self.lock:
             count = self.counter.count
+            rejected = dict(self.counter.rejected)
         duration = self.elapsed(self.t_last)
         mm, ss = divmod(int(duration), 60)
         per_min = count / duration * 60 if duration > 0 else 0.0
         lines = [f"점프 {count}회 / {mm:02d}:{ss:02d} / 평균 {per_min:.0f}회/분"]
+        if any(rejected.values()):
+            lines.append(f"걸러냄: 발 안 뜸 {rejected['feet']}, 제자리 아님 {rejected['motion']}, "
+                         f"리듬 없음 {rejected['rhythm']}")
         if self.worker.processed:
             lines.append(f"추론 {self.worker.processed}프레임, 평균 {self.worker.infer_ms:.1f} ms"
                          + (f", 건너뜀 {self.worker.dropped}" if self.worker.dropped else ""))
