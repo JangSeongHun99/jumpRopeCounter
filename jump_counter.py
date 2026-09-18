@@ -22,8 +22,10 @@
      리듬이 잡힌 뒤에는 최근 주기와 비슷한 간격(0.65~1.5배)으로 오는 후보만 바로 세고,
      간격이 크게 어긋나면(걸린 뒤 허둥대는 걸음 등) 다시 리듬 확인으로 돌아간다.
      자세 바꾸기, 몸 흔들기, 한두 번 튕기기 같은 산발적 움직임은 여기서 걸러진다.
-  8. 줄에 걸리면 리듬이 끊긴다. 줄은 30fps에서 보이지 않으므로, rhythm_break 초 넘게 쉬었다가
-     다시 리듬이 잡히면 그 직전 점프(걸린 시도)를 1회 빼고 misses 를 1 올린다 (miss_correction).
+  8. 줄에 걸리면 리듬이 끊긴다. 줄은 30fps에서 보이지 않으므로, 점프 간격이 miss_gap 초와
+     주기의 1.8배 중 큰 쪽을 넘게 비었다가 다시 리듬이 잡히면 그 직전 점프(걸린 시도)를 1회 빼고
+     misses 를 1 올린다 (miss_correction). 걸린 줄을 풀고 다시 돌리는 데 최소 1초 남짓 걸리고,
+     박자 하나 놓치는 멈칫은 주기의 2배 안쪽이라 이 기준으로 구분한다.
      스스로 쉬었다 재개해도 1회가 빠지는 대가가 있다. 마지막에 그냥 멈추면 빠지지 않는다.
      streak(현재 연속)와 best_streak(최고 연속)도 같이 센다.
   lenient=True 로 만들면 5~8번 검사를 끄고 몸이 오르내린 횟수만 센다.
@@ -152,7 +154,8 @@ class JumpCounter:
                  max_shift: float = 0.5, max_scale_change: float = 0.2, max_width_change: float = 0.4,
                  rhythm_min: int = 3, period_range: tuple = (0.25, 1.5),
                  period_tolerance: float = 0.5, rhythm_break: float = 2.0,
-                 miss_correction: bool = True, lenient: bool = False, debug: bool = False,
+                 miss_correction: bool = True, miss_gap: float = 1.2,
+                 lenient: bool = False, debug: bool = False,
                  history_seconds: float = 12.0):
         self.threshold = threshold          # 점프로 인정할 최소 진폭 (몸통 길이 비율)
         self.min_interval = min_interval    # 점프 사이 최소 간격 (초)
@@ -170,6 +173,7 @@ class JumpCounter:
         self.period_tolerance = period_tolerance  # 연속 간격끼리 허용하는 편차 비율
         self.rhythm_break = rhythm_break    # 이보다 오래 쉬면 리듬을 다시 확인
         self.miss_correction = miss_correction and not lenient  # 쉬었다 재개하면 직전 점프를 걸린 것으로 보고 뺀다
+        self.miss_gap = miss_gap            # 이 시간(또는 주기의 1.8배) 넘게 비면 걸린 것으로 본다 (초)
         self.lenient = lenient              # True면 발/머리 대조, 제자리, 리듬 검사를 모두 끈다
         self.debug = debug                  # True면 후보마다 판정 내용을 log에 남긴다
         self.history = deque()              # (t, 높이) 그래프용
@@ -403,7 +407,9 @@ class JumpCounter:
                 dropped = len(self.pending) - len(run)
                 if dropped:
                     self.rejected["rhythm"] += dropped        # 규칙적 구간 앞의 불규칙 후보는 버린다
-                if self.events and run[0].t - self.events[-1].t > self.rhythm_break:
+                ref = self._ref_period()
+                miss_thr = max(self.miss_gap, 1.8 * ref) if ref else self.miss_gap
+                if self.events and run[0].t - self.events[-1].t > miss_thr:
                     # 쉬었다가 다시 시작함: 직전 점프는 줄에 걸린 시도로 보고 뺀다
                     if self.miss_correction:
                         removed = self.events.pop()
