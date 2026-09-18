@@ -74,11 +74,15 @@ def detect_landmarks(landmarker, bgr: np.ndarray, timestamp_ms: int):
 
 
 def landmarks_to_tuples(landmarks) -> list[Landmark]:
-    """MediaPipe 랜드마크 객체를 스레드 간에 넘기기 쉬운 가벼운 튜플로 바꾼다 (정규화 좌표)."""
+    """MediaPipe 랜드마크 객체를 스레드 간에 넘기기 쉬운 가벼운 튜플로 바꾼다 (정규화 좌표).
+    visibility와 presence 중 작은 값을 쓴다: 화면 밖으로 추정된 관절은 presence가 낮다."""
     out = []
     for lm in landmarks:
-        v = lm.visibility
-        out.append(Landmark(lm.x, lm.y, 1.0 if v is None else float(v)))
+        v = 1.0 if lm.visibility is None else float(lm.visibility)
+        p = getattr(lm, "presence", None)
+        if p is not None:
+            v = min(v, float(p))
+        out.append(Landmark(lm.x, lm.y, v))
     return out
 
 
