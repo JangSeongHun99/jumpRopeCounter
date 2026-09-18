@@ -9,8 +9,10 @@
      (기준선을 따로 두지 않으므로 사람이 앞뒤로 움직여도 드리프트에 강하다)
   4. 최소 간격(min_interval), 최대 상승 시간(max_rise_time), 최대 진폭(max_amplitude)으로
      걷기·앉았다 일어나기·추적 튐 같은 오검출을 걸러낸다.
-  5. 점프는 머리와 엉덩이도 몸통과 함께 올라가지만, 어깨 으쓱이나 팔 동작은 어깨만 움직인다.
-     머리(코·귀)나 엉덩이의 상승량이 몸통 상승량의 coherence 비율에 못 미치면 점프로 세지 않는다.
+  5. 점프인지 확인: 발목이 잘 보이면 최저점->최고점 사이에 한 발이라도 몸통 길이의 feet_lift
+     이상 올라갔는지를 기준으로 삼는다 (발이 땅에 붙어 있으면 점프가 아님).
+     발이 안 보이면(상반신만 촬영) 머리(코·귀)나 엉덩이가 몸통과 함께 올라갔는지로 대신한다.
+     어깨 으쓱, 팔 동작, 발이 땅에 붙은 채 무릎만 굽혔다 펴기는 이 검사에서 걸러진다.
 """
 from __future__ import annotations
 
@@ -52,13 +54,17 @@ class BodySignal:
     center_x: float = 0.0
     head_y: Optional[float] = None  # 머리(코·귀 평균) y. 어깨 으쓱과 점프를 구분하는 데 쓴다
     hip_y: Optional[float] = None   # 엉덩이 중점 y (보이지 않으면 None)
+    feet_y: Optional[tuple] = None  # (왼발목 y, 오른발목 y). 둘 다 잘 보일 때만. 발이 떴는지 판단
 
 
 def extract_signal(landmarks: Sequence, width: int, height: int,
-                   min_visibility: float = 0.5, source: str = "torso") -> Optional[BodySignal]:
+                   min_visibility: float = 0.5, source: str = "torso",
+                   feet_visibility: float = 0.7) -> Optional[BodySignal]:
     """정규화 랜드마크(x, y, visibility) 목록에서 점프 판정용 신호를 뽑는다.
 
     source: "torso" (기본, 상반신만 보여도 동작) 또는 "feet" (발목 사용, 전신이 보일 때만).
+    feet_visibility: 발목이 이 값 이상으로 확실히 보일 때만 발 기준 검사에 쓴다
+    (책상 등에 가려 추정만 된 발목으로 실제 점프를 걸러내지 않도록 기준을 높게 둔다).
     어깨·엉덩이 둘 다 안 보이면 None.
     """
     def pt(i):
@@ -85,16 +91,17 @@ def extract_signal(landmarks: Sequence, width: int, height: int,
     if scale < 4:
         return None
 
+    la, ra = pt(L_ANKLE), pt(R_ANKLE)
+    feet_ok = la[2] >= feet_visibility and ra[2] >= feet_visibility
     center_y = center[1]
-    if source == "feet":
-        la, ra = pt(L_ANKLE), pt(R_ANKLE)
-        if la[2] >= min_visibility and ra[2] >= min_visibility:
-            center_y = (la[1] + ra[1]) / 2
+    if source == "feet" and la[2] >= min_visibility and ra[2] >= min_visibility:
+        center_y = (la[1] + ra[1]) / 2
 
     head_pts = [p for p in (pt(NOSE), pt(L_EAR), pt(R_EAR)) if p[2] >= min_visibility]
     head_y = sum(p[1] for p in head_pts) / len(head_pts) if head_pts else None
     return BodySignal(center_y=center_y, scale=scale, center_x=center[0],
-                      head_y=head_y, hip_y=hip_mid[1] if hip_ok else None)
+                      head_y=head_y, hip_y=hip_mid[1] if hip_ok else None,
+                      feet_y=(la[1], ra[1]) if feet_ok else None)
 
 
 @dataclass
@@ -111,14 +118,16 @@ class JumpCounter:
     def __init__(self, threshold: float = 0.05, min_interval: float = 0.20,
                  max_rise_time: float = 0.7, max_amplitude: float = 1.5,
                  smoothing: float = 0.5, lost_timeout: float = 0.5,
-                 coherence: float = 0.5, history_seconds: float = 12.0):
+                 coherence: float = 0.5, feet_lift: float = 0.03,
+                 history_seconds: float = 12.0):
         self.threshold = threshold          # 점프로 인정할 최소 진폭 (몸통 길이 비율)
         self.min_interval = min_interval    # 점프 사이 최소 간격 (초)
         self.max_rise_time = max_rise_time  # 이보다 느리게 올라가면 점프가 아님 (초)
         self.max_amplitude = max_amplitude  # 이보다 크면 추적 오류로 간주
         self.smoothing = smoothing          # EMA 계수 (1이면 평활화 없음)
         self.lost_timeout = lost_timeout    # 이 시간 이상 사람이 안 보이면 상태 초기화
-        self.coherence = coherence          # 머리/엉덩이 상승량이 몸통 상승량의 이 비율 이상이어야 점프
+        self.coherence = coherence          # 발이 안 보일 때: 머리/엉덩이 상승량이 몸통 상승량의 이 비율 이상이어야 점프
+        self.feet_lift = feet_lift          # 발이 보일 때: 한 발이라도 몸통 길이의 이 비율 이상 올라가야 점프
         self.history = deque()              # (t, 높이) 그래프용
         self._history_seconds = history_seconds
         self.reset()
@@ -126,7 +135,7 @@ class JumpCounter:
     # ----------------------------------------------------------------- 상태
     def reset(self):
         self.count = 0
-        self.rejected = 0            # 머리/엉덩이가 함께 안 움직여 걸러낸 횟수 (어깨 으쓱 등)
+        self.rejected = 0            # 발(또는 머리/엉덩이)이 함께 안 올라가 걸러낸 횟수 (으쓱, 무릎 굽히기 등)
         self.events: list[JumpEvent] = []
         self.last_t: Optional[float] = None
         self.height = 0.0            # 현재 높이 (최근 최저점 대비, 몸통 길이 단위)
@@ -144,7 +153,7 @@ class JumpCounter:
         self._smooth = None
         self._scale = None
         self._last_seen_t = None
-        self._track = deque()         # (t, 머리 높이, 엉덩이 높이) 최근 3초, 일치 검사용
+        self._track = deque()         # (t, 머리 높이, 엉덩이 높이, 왼발 높이, 오른발 높이) 최근 3초
 
     # ----------------------------------------------------------------- 갱신
     def update(self, t: float, sig: Optional[BodySignal]) -> Optional[JumpEvent]:
@@ -174,9 +183,11 @@ class JumpCounter:
             self._smooth += self.smoothing * (v - self._smooth)
         v = self._smooth
 
-        # 머리/엉덩이 높이 기록 (피크 확정 시 몸통과 같이 올라갔는지 대조)
+        # 머리/엉덩이/발 높이 기록 (피크 확정 시 몸통과 같이 올라갔는지 대조, 위쪽이 양수)
         self._track.append((t, None if sig.head_y is None else -sig.head_y,
-                            None if sig.hip_y is None else -sig.hip_y))
+                            None if sig.hip_y is None else -sig.hip_y,
+                            None if sig.feet_y is None else -sig.feet_y[0],
+                            None if sig.feet_y is None else -sig.feet_y[1]))
         while self._track and t - self._track[0][0] > 3.0:
             self._track.popleft()
 
@@ -225,7 +236,7 @@ class JumpCounter:
         if self._last_peak_t is not None and peak_t - self._last_peak_t < self.min_interval:
             return None
         if not self._coherent(self._valley_t, peak_t, peak_val - self._valley_val):
-            self.rejected += 1                  # 어깨만 올라간 것 (으쓱, 팔 동작)
+            self.rejected += 1                  # 발이 안 뜬 것 (으쓱, 팔 동작, 무릎 굽히기)
             return None
         self._last_peak_t = peak_t
         self.count += 1
@@ -241,10 +252,16 @@ class JumpCounter:
         return best
 
     def _coherent(self, t_valley: float, t_peak: float, body_rise: float) -> bool:
-        """최저점->최고점 사이에 머리 또는 엉덩이도 몸통만큼 올라갔는지. 둘 다 안 보이면 통과."""
+        """최저점->최고점 사이에 몸이 실제로 떴는지.
+        발목이 보이면: 한 발이라도 몸통 길이의 feet_lift 이상 올라가야 한다 (발이 붙어 있으면 거부).
+        몸통은 무릎 굽힘까지 포함해 오르내리므로 발 상승량을 몸통 상승량과 비율로 비교하지 않는다.
+        발이 안 보이면: 머리 또는 엉덩이가 몸통 상승량의 coherence 비율 이상 같이 올라가야 한다.
+        아무것도 안 보이면 통과."""
         a, b = self._sample_at(t_valley), self._sample_at(t_peak)
         if a is None or b is None:
             return True
+        if None not in (a[3], a[4], b[3], b[4]):
+            return max(b[3] - a[3], b[4] - a[4]) >= self.feet_lift * self._scale
         rises = [b[i] - a[i] for i in (1, 2) if a[i] is not None and b[i] is not None]
         if not rises:
             return True
