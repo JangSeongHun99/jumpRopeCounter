@@ -5,14 +5,20 @@
   2. 몸통 길이(어깨 중점 ~ 엉덩이 중점)를 기준 길이로 삼아, 카메라와의 거리에
      무관한 상대 단위(몸통 길이 = 1.0)로 움직임을 잰다.
   3. 히스테리시스 피크/밸리 검출: 최저점에서 threshold 이상 올라가면 "상승 중",
-     최고점에서 threshold 이상 내려오면 "피크 확정" -> 점프 1회.
+     최고점에서 threshold 이상 내려오면 "피크 확정" -> 점프 후보 1회.
      (기준선을 따로 두지 않으므로 사람이 앞뒤로 움직여도 드리프트에 강하다)
   4. 최소 간격(min_interval), 최대 상승 시간(max_rise_time), 최대 진폭(max_amplitude)으로
-     걷기·앉았다 일어나기·추적 튐 같은 오검출을 걸러낸다.
-  5. 점프인지 확인: 발목이 잘 보이면 최저점->최고점 사이에 한 발이라도 몸통 길이의 feet_lift
-     이상 올라갔는지를 기준으로 삼는다 (발이 땅에 붙어 있으면 점프가 아님).
-     발이 안 보이면(상반신만 촬영) 머리(코·귀)나 엉덩이가 몸통과 함께 올라갔는지로 대신한다.
-     어깨 으쓱, 팔 동작, 발이 땅에 붙은 채 무릎만 굽혔다 펴기는 이 검사에서 걸러진다.
+     앉았다 일어나기·추적 튐 같은 오검출을 걸러낸다.
+  5. 발목이 잘 보이면 최저점->최고점 사이에 한 발이라도 몸통 길이의 feet_lift 이상 올라가야
+     점프다 (발이 땅에 붙어 있으면 아님). 발이 안 보이면(상반신만 촬영) 머리(코·귀)나 엉덩이가
+     몸통과 함께 올라갔는지로 대신한다. 어깨 으쓱, 팔 동작, 무릎만 굽혔다 펴기가 걸러진다.
+  6. 제자리 점프는 좌우로 움직이지 않고 카메라와의 거리(= 몸통 크기)도 변하지 않는다.
+     최저점->최고점 사이 좌우 이동이 몸통 길이의 max_shift 이상이거나(걷기), 몸통 크기가
+     max_scale_change 이상 변하면(앞으로 숙이기, 카메라 쪽으로 기울이기) 점프가 아니다.
+  7. 줄넘기는 리듬이 있다. 후보가 비슷한 간격(period_range 안, 편차 period_tolerance 이하)으로
+     rhythm_min 회 이어져야 세기 시작하고, 그때 앞의 후보들도 한꺼번에 반영한다.
+     리듬이 잡힌 뒤에는 rhythm_break 초 이상 쉬기 전까지 바로바로 센다.
+     자세 바꾸기, 몸 흔들기, 한두 번 튕기기 같은 산발적 움직임은 여기서 걸러진다.
 """
 from __future__ import annotations
 
@@ -51,7 +57,7 @@ class BodySignal:
     """한 프레임에서 뽑은 신체 신호 (픽셀 단위)."""
     center_y: float                 # 몸통 중심 y (아래로 갈수록 커짐)
     scale: float                    # 몸통 길이 - 정규화 기준
-    center_x: float = 0.0
+    center_x: float = 0.0           # 몸통 중심 x (좌우 이동 검사용)
     head_y: Optional[float] = None  # 머리(코·귀 평균) y. 어깨 으쓱과 점프를 구분하는 데 쓴다
     hip_y: Optional[float] = None   # 엉덩이 중점 y (보이지 않으면 None)
     feet_y: Optional[tuple] = None  # (왼발목 y, 오른발목 y). 둘 다 잘 보일 때만. 발이 떴는지 판단
@@ -116,9 +122,12 @@ class JumpCounter:
     """프레임마다 update(t, signal)를 호출하면 점프를 세어 준다."""
 
     def __init__(self, threshold: float = 0.05, min_interval: float = 0.20,
-                 max_rise_time: float = 0.7, max_amplitude: float = 1.5,
+                 max_rise_time: float = 0.5, max_amplitude: float = 1.5,
                  smoothing: float = 0.5, lost_timeout: float = 0.5,
                  coherence: float = 0.5, feet_lift: float = 0.03,
+                 max_shift: float = 0.5, max_scale_change: float = 0.15,
+                 rhythm_min: int = 3, period_range: tuple = (0.25, 1.2),
+                 period_tolerance: float = 0.4, rhythm_break: float = 2.0,
                  history_seconds: float = 12.0):
         self.threshold = threshold          # 점프로 인정할 최소 진폭 (몸통 길이 비율)
         self.min_interval = min_interval    # 점프 사이 최소 간격 (초)
@@ -128,6 +137,12 @@ class JumpCounter:
         self.lost_timeout = lost_timeout    # 이 시간 이상 사람이 안 보이면 상태 초기화
         self.coherence = coherence          # 발이 안 보일 때: 머리/엉덩이 상승량이 몸통 상승량의 이 비율 이상이어야 점프
         self.feet_lift = feet_lift          # 발이 보일 때: 한 발이라도 몸통 길이의 이 비율 이상 올라가야 점프
+        self.max_shift = max_shift          # 최저점->최고점 좌우 이동이 몸통 길이의 이 비율을 넘으면 걷기
+        self.max_scale_change = max_scale_change  # 몸통 크기가 이 비율 넘게 변하면 앞뒤로 움직인 것
+        self.rhythm_min = rhythm_min        # 세기 시작하는 데 필요한 연속 후보 수
+        self.period_range = period_range    # 점프 간격 허용 범위 (초): 분당 50 ~ 240회
+        self.period_tolerance = period_tolerance  # 연속 간격끼리 허용하는 편차 비율
+        self.rhythm_break = rhythm_break    # 이보다 오래 쉬면 리듬을 다시 확인
         self.history = deque()              # (t, 높이) 그래프용
         self._history_seconds = history_seconds
         self.reset()
@@ -135,7 +150,7 @@ class JumpCounter:
     # ----------------------------------------------------------------- 상태
     def reset(self):
         self.count = 0
-        self.rejected = 0            # 발(또는 머리/엉덩이)이 함께 안 올라가 걸러낸 횟수 (으쓱, 무릎 굽히기 등)
+        self.rejected = {"feet": 0, "motion": 0, "rhythm": 0}   # 걸러낸 이유별 횟수
         self.events: list[JumpEvent] = []
         self.last_t: Optional[float] = None
         self.height = 0.0            # 현재 높이 (최근 최저점 대비, 몸통 길이 단위)
@@ -153,18 +168,20 @@ class JumpCounter:
         self._smooth = None
         self._scale = None
         self._last_seen_t = None
-        self._track = deque()         # (t, 머리 높이, 엉덩이 높이, 왼발 높이, 오른발 높이) 최근 3초
+        self._track = deque()         # (t, 머리, 엉덩이, 왼발, 오른발, x, 몸통 크기) 최근 3초
+        self.in_rhythm = False        # 리듬이 확인되어 바로바로 세는 중인지
+        self.pending: list[JumpEvent] = []   # 리듬 확인 전 후보 점프
 
     # ----------------------------------------------------------------- 갱신
-    def update(self, t: float, sig: Optional[BodySignal]) -> Optional[JumpEvent]:
+    def update(self, t: float, sig: Optional[BodySignal]) -> list[JumpEvent]:
         """t: 초 단위 시각(단조 증가). sig: extract_signal 결과 또는 None(사람 없음).
-        점프가 확정된 프레임에서 JumpEvent를 돌려준다."""
+        이번 프레임에 확정된 점프 목록을 돌려준다 (리듬이 잡히는 순간에는 여러 개)."""
         self.last_t = t
         if sig is None:
             self.tracking = False
             if self._last_seen_t is not None and t - self._last_seen_t > self.lost_timeout:
                 self._reset_tracking()
-            return None
+            return []
         self.tracking = True
         self._last_seen_t = t
 
@@ -174,7 +191,7 @@ class JumpCounter:
         else:
             self._scale += 0.05 * (sig.scale - self._scale)
         if self._scale < 1e-3:
-            return None
+            return []
 
         v = -sig.center_y  # 위쪽이 양수가 되도록 뒤집는다 (픽셀)
         if self._smooth is None:
@@ -183,11 +200,12 @@ class JumpCounter:
             self._smooth += self.smoothing * (v - self._smooth)
         v = self._smooth
 
-        # 머리/엉덩이/발 높이 기록 (피크 확정 시 몸통과 같이 올라갔는지 대조, 위쪽이 양수)
+        # 머리/엉덩이/발 높이, 좌우 위치, 몸통 크기 기록 (피크 확정 시 대조, 높이는 위쪽이 양수)
         self._track.append((t, None if sig.head_y is None else -sig.head_y,
                             None if sig.hip_y is None else -sig.hip_y,
                             None if sig.feet_y is None else -sig.feet_y[0],
-                            None if sig.feet_y is None else -sig.feet_y[1]))
+                            None if sig.feet_y is None else -sig.feet_y[1],
+                            sig.center_x, sig.scale))
         while self._track and t - self._track[0][0] > 3.0:
             self._track.popleft()
 
@@ -200,21 +218,21 @@ class JumpCounter:
             self.height = (v - self._valley_val) / self._scale
         return self._step(t, v)
 
-    def _step(self, t: float, v: float) -> Optional[JumpEvent]:
+    def _step(self, t: float, v: float) -> list[JumpEvent]:
         thr = self.threshold * self._scale
         if self._state == "init":
             self._state = "falling"     # 먼저 최저점(서 있는 자세)을 찾는다
             self._ext_val, self._ext_t = v, t
-            return None
+            return []
 
         if self._state == "rising":
             if v >= self._ext_val:
                 self._ext_val, self._ext_t = v, t
             elif self._ext_val - v >= thr:          # 최고점에서 thr 만큼 내려옴 -> 피크 확정
-                event = self._on_peak(self._ext_t, self._ext_val)
+                events = self._on_peak(self._ext_t, self._ext_val)
                 self._state = "falling"
                 self._ext_val, self._ext_t = v, t
-                return event
+                return events
         else:  # falling
             if v <= self._ext_val:
                 self._ext_val, self._ext_t = v, t
@@ -222,27 +240,28 @@ class JumpCounter:
                 self._valley_val, self._valley_t = self._ext_val, self._ext_t
                 self._state = "rising"
                 self._ext_val, self._ext_t = v, t
-        return None
+        return []
 
-    def _on_peak(self, peak_t: float, peak_val: float) -> Optional[JumpEvent]:
+    def _on_peak(self, peak_t: float, peak_val: float) -> list[JumpEvent]:
         if self._valley_val is None:
-            return None
+            return []
         amplitude = (peak_val - self._valley_val) / self._scale
         rise_time = peak_t - self._valley_t
         if amplitude > self.max_amplitude:      # 추적이 튄 것
-            return None
+            return []
         if rise_time > self.max_rise_time:      # 천천히 일어난 것 (점프 아님)
-            return None
+            return []
         if self._last_peak_t is not None and peak_t - self._last_peak_t < self.min_interval:
-            return None
+            return []
         if not self._coherent(self._valley_t, peak_t, peak_val - self._valley_val):
-            self.rejected += 1                  # 발이 안 뜬 것 (으쓱, 팔 동작, 무릎 굽히기)
-            return None
+            self.rejected["feet"] += 1          # 발이 안 뜬 것 (으쓱, 팔 동작, 무릎 굽히기)
+            return []
+        if not self._in_place(self._valley_t, peak_t):
+            self.rejected["motion"] += 1        # 걷기, 숙이기, 카메라 쪽으로 기울이기
+            return []
         self._last_peak_t = peak_t
-        self.count += 1
-        event = JumpEvent(index=self.count, t=peak_t, amplitude=amplitude, rise_time=rise_time)
-        self.events.append(event)
-        return event
+        candidate = JumpEvent(index=0, t=peak_t, amplitude=amplitude, rise_time=rise_time)
+        return self._rhythm(candidate)
 
     def _sample_at(self, t: float):
         best = None
@@ -267,10 +286,55 @@ class JumpCounter:
             return True
         return max(rises) >= self.coherence * body_rise
 
+    def _in_place(self, t_valley: float, t_peak: float) -> bool:
+        """제자리에서 뛰었는지: 좌우 이동이 작고 카메라와의 거리(몸통 크기)가 유지되어야 한다."""
+        a, b = self._sample_at(t_valley), self._sample_at(t_peak)
+        if a is None or b is None:
+            return True
+        if abs(b[5] - a[5]) > self.max_shift * self._scale:
+            return False
+        if abs(b[6] - a[6]) > self.max_scale_change * self._scale:
+            return False
+        return True
+
+    def _rhythm(self, cand: JumpEvent) -> list[JumpEvent]:
+        """리듬 검사. 세기로 확정된 점프 목록을 돌려준다."""
+        t = cand.t
+        if self.in_rhythm:
+            if t - self.events[-1].t <= self.rhythm_break:
+                return [self._count(cand)]
+            self.in_rhythm = False              # 오래 쉬었으면 리듬을 다시 확인한다
+        if self.pending and t - self.pending[-1].t > self.period_range[1]:
+            self.rejected["rhythm"] += len(self.pending)   # 이어지지 못한 후보들은 버린다
+            self.pending = []
+        self.pending.append(cand)
+        if len(self.pending) >= self.rhythm_min:
+            run = self.pending[-self.rhythm_min:]
+            gaps = [run[i + 1].t - run[i].t for i in range(len(run) - 1)]
+            lo, hi = self.period_range
+            regular = all(lo <= g <= hi for g in gaps) and \
+                (max(gaps) - min(gaps)) <= self.period_tolerance * max(gaps)
+            if regular:
+                counted = [self._count(c) for c in self.pending]   # 앞의 후보들도 한꺼번에 반영
+                self.pending = []
+                self.in_rhythm = True
+                return counted
+        return []
+
+    def _count(self, cand: JumpEvent) -> JumpEvent:
+        self.count += 1
+        cand.index = self.count
+        self.events.append(cand)
+        return cand
+
     # ----------------------------------------------------------------- 조회
     @property
     def state(self) -> str:
         return self._state
+
+    @property
+    def rejected_total(self) -> int:
+        return sum(self.rejected.values())
 
     def cadence(self, now: Optional[float] = None, window: int = 8) -> float:
         """최근 점프들로 계산한 분당 점프 수. 3초 이상 멈추면 0."""
