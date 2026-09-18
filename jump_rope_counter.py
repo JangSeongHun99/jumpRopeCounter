@@ -571,6 +571,8 @@ def parse_args():
                    help="움직임을 잴 부위: torso(몸통, 기본) / feet(발목, 전신이 보일 때)")
     p.add_argument("--lenient", action="store_true",
                    help="오작동 방지 검사(발/머리 대조, 제자리, 리듬)를 끄고 몸이 오르내린 횟수만 셈")
+    p.add_argument("--miss-gap", type=float, default=1.2,
+                   help="점프 간격이 이 시간(초, 또는 주기의 1.8배 중 큰 쪽) 넘게 비면 줄에 걸린 것으로 봄. 기본 1.2")
     p.add_argument("--debug", action="store_true", help="점프 후보마다 판정 이유를 콘솔에 출력")
     p.add_argument("--no-mirror", action="store_true", help="카메라 화면 좌우반전 끄기")
     p.add_argument("--no-display", action="store_true", help="창 없이 실행 (동영상 일괄 처리용)")
@@ -617,7 +619,7 @@ def main():
         print("카메라 앞에서 상반신(어깨~엉덩이)이 보이도록 서세요. q 로 종료합니다.")
 
     counter = JumpCounter(threshold=args.threshold, min_interval=args.min_interval, smoothing=args.smoothing,
-                          lenient=args.lenient, debug=args.debug)
+                          miss_gap=args.miss_gap, lenient=args.lenient, debug=args.debug)
     if args.lenient:
         print("[설정] --lenient: 오작동 방지 검사를 끄고 몸이 오르내린 횟수만 셉니다.")
     lock = threading.Lock()
