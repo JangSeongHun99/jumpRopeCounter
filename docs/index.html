@@ -73,6 +73,14 @@
     </ol>
   </div>
   <div class="card">
+    <h2>학생 정보</h2>
+    <div class="grid">
+      <div><label class="row" for="clsIn0">학년-반</label><input type="text" id="clsIn0" placeholder="예: 3-2" autocomplete="off"></div>
+      <div><label class="row" for="nameIn0">이름</label><input type="text" id="nameIn0" placeholder="예: 김민준" autocomplete="off"></div>
+    </div>
+    <div id="sheetBadge" class="hint" style="margin-top:8px"></div>
+  </div>
+  <div class="card">
     <h2>설정</h2>
     <div class="grid">
       <div><label class="row" for="timerSel">제한 시간</label>
@@ -90,7 +98,15 @@
     <div id="records">아직 없음</div>
     <div class="btnrow" style="margin-top:10px"><button class="secondary" id="csvBtn">CSV 내려받기</button><button class="secondary" id="clearBtn">기록 지우기</button></div>
   </div>
-  <div class="hint">영상은 이 기기 안에서만 처리되고 어디로도 전송되지 않습니다. 포즈 인식: MediaPipe.</div>
+  <details class="card">
+    <summary style="cursor:pointer; font-size:18px; color:var(--dim); font-weight:600;">선생님 설정 (구글 스프레드시트 연동)</summary>
+    <p class="hint" style="margin:10px 0 6px">시트에 붙인 Apps Script 웹 앱 주소를 넣으면, 저장할 때 학년-반 탭과 "전체" 탭에 한 줄씩 기록됩니다. 만드는 법은 저장소 README 참고.
+      주소가 들어간 링크(<code>?sheet=주소</code>)를 학생들에게 나눠 주면 학생은 아무 설정도 필요 없습니다.</p>
+    <input type="text" id="sheetUrlIn" placeholder="https://script.google.com/macros/s/.../exec" autocomplete="off">
+    <div class="btnrow" style="margin-top:10px"><button class="secondary" id="sheetSaveBtn">주소 저장</button><button class="secondary" id="sheetTestBtn">연결 테스트</button><button class="secondary" id="sheetLinkBtn">학생용 링크 복사</button></div>
+    <div id="sheetStatus" class="hint" style="margin-top:8px"></div>
+  </details>
+  <div class="hint">영상은 이 기기 안에서만 처리되고 어디로도 전송되지 않습니다. 시트 연동을 켜면 이름과 결과 숫자만 시트로 보냅니다. 포즈 인식: MediaPipe.</div>
 </div>
 
 <div id="live">
@@ -126,6 +142,7 @@
     <label class="row"><input type="checkbox" id="photoChk" checked> 정지 순간 사진을 결과지에 넣기</label>
     <img id="cardImg" alt="결과지 미리보기">
     <div class="hint">아이패드에서는 위 이미지를 길게 눌러 "사진에 저장"을 해도 됩니다.</div>
+    <div id="sheetResult" class="hint"></div>
     <div class="btnrow">
       <button class="primary" id="shareBtn">이미지 저장 / 공유</button>
       <button class="secondary" id="downloadBtn">다운로드</button>
@@ -155,6 +172,79 @@ const TEST_VIDEO = params.get("video");          // 테스트용: 카메라 대�
 const AUTO = params.get("auto") === "1";         // 테스트용: 영상이 끝나면 결과를 콘솔에 출력
 const STEP_FPS = parseFloat(params.get("step") || "0");   // 테스트용: 재생 대신 1/step 초 간격으로 프레임을 넘기며 처리 (느린 환경)
 const DELEGATE = params.get("delegate") || "GPU";          // 테스트용: GPU/CPU
+const APP_URL = location.origin + location.pathname;
+
+// ------------------------------------------------------------ 구글 시트 연동 (Apps Script 웹 앱)
+function getPref(k, d) { try { return localStorage.getItem(k) ?? d; } catch (e) { return d; } }
+function setPref(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+if (params.get("sheet")) setPref("jr_sheet_url", params.get("sheet").trim());   // 링크로 배포된 주소는 기기에 기억
+if (params.get("cls")) setPref("jr_cls", params.get("cls"));
+if (params.get("name")) setPref("jr_name", params.get("name"));
+const sheetUrl = () => getPref("jr_sheet_url", "").trim();
+
+async function postToSheet(payload, timeoutMs) {
+  const url = sheetUrl();
+  if (!url) return { ok: false, skipped: true };
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs || 15000);
+  try {
+    // text/plain 으로 보내면 CORS 사전 요청 없이 Apps Script 가 받는다
+    const res = await fetch(url, { method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" },
+                                   body: JSON.stringify(payload), redirect: "follow", signal: ctrl.signal });
+    const txt = await res.text();
+    let j = null; try { j = JSON.parse(txt); } catch (e) {}
+    if (j && j.ok) return { ok: true, info: j };
+    return { ok: false, error: (j && j.error) || `응답 ${res.status}: ${txt.slice(0, 120)}` };
+  } catch (e) {
+    return { ok: false, error: e && e.name === "AbortError" ? "시간 초과" : String(e && e.message || e) };
+  } finally { clearTimeout(timer); }
+}
+
+function loadOutbox() { try { return JSON.parse(getPref("jr_outbox", "[]")); } catch (e) { return []; } }
+function saveOutbox(q) { setPref("jr_outbox", JSON.stringify(q.slice(-500))); }
+let flushing = false;
+async function flushOutbox() {   // 전송 못 한 기록을 순서대로 재시도
+  if (flushing || !sheetUrl()) return;
+  flushing = true;
+  try {
+    let q = loadOutbox();
+    while (q.length) {
+      const r = await postToSheet({ type: "record", ...q[0] });
+      if (!r.ok) break;
+      q.shift(); saveOutbox(q);
+    }
+    updateSheetBadge();
+  } finally { flushing = false; }
+}
+async function sendRecord(rec) {   // 즉시 전송, 실패하면 보관함에 넣어 나중에 재시도
+  if (!sheetUrl()) return { ok: false, skipped: true };
+  const r = await postToSheet({ type: "record", ...rec });
+  if (!r.ok) { const q = loadOutbox(); q.push(rec); saveOutbox(q); }
+  updateSheetBadge();
+  return r;
+}
+function updateSheetBadge() {
+  const url = sheetUrl(), q = loadOutbox().length;
+  $("sheetBadge").textContent = url ? `구글 시트 연동: 켜짐${q ? ` (미전송 ${q}건, 연결되면 자동 전송)` : ""}` : "구글 시트 연동: 꺼짐 (기기에만 기록)";
+  $("sheetUrlIn").value = url;
+}
+$("sheetSaveBtn").onclick = () => { setPref("jr_sheet_url", $("sheetUrlIn").value.trim()); updateSheetBadge(); $("sheetStatus").textContent = sheetUrl() ? "저장했습니다." : "주소를 지웠습니다 (연동 꺼짐)."; flushOutbox(); };
+$("sheetTestBtn").onclick = async () => {
+  setPref("jr_sheet_url", $("sheetUrlIn").value.trim()); updateSheetBadge();
+  $("sheetStatus").textContent = "연결 확인 중...";
+  const r = await postToSheet({ type: "ping" }, 20000);
+  $("sheetStatus").textContent = r.ok ? `연결됨: ${r.info.spreadsheet || "OK"}` : (r.skipped ? "주소를 먼저 넣어 주세요." : "연결 실패: " + r.error + " (배포 설정이 '모든 사용자'인지, 주소가 /exec 로 끝나는지 확인)");
+};
+$("sheetLinkBtn").onclick = async () => {
+  if (!sheetUrl()) { $("sheetStatus").textContent = "주소를 먼저 저장해 주세요."; return; }
+  const link = `${APP_URL}?sheet=${encodeURIComponent(sheetUrl())}`;
+  try { await navigator.clipboard.writeText(link); $("sheetStatus").textContent = "학생용 링크를 복사했습니다: " + link; }
+  catch (e) { $("sheetStatus").textContent = "학생용 링크: " + link; }
+};
+$("clsIn0").value = getPref("jr_cls", ""); $("nameIn0").value = getPref("jr_name", "");
+$("clsIn0").addEventListener("input", () => setPref("jr_cls", $("clsIn0").value.trim()));
+updateSheetBadge(); flushOutbox();
+window.addEventListener("online", flushOutbox);
 
 let landmarker = null, landmarkerModel = null;
 let counter = null, running = false, stream = null, wakeLock = null;
@@ -167,10 +257,11 @@ const octx = overlay.getContext("2d"), gctx = graph.getContext("2d");
 // ------------------------------------------------------------ 기록 (이 기기)
 function loadRecords() { try { return JSON.parse(localStorage.getItem("jr_records") || "[]"); } catch (e) { return []; } }
 function saveRecords(r) { try { localStorage.setItem("jr_records", JSON.stringify(r.slice(-200))); } catch (e) {} }
+function esc(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 function renderRecords() {
   const r = loadRecords();
   $("records").innerHTML = r.length ? r.slice().reverse().slice(0, 30).map((x) =>
-    `<div>${x.date} · <b>${x.name || "(이름 없음)"}</b> ${x.cls ? "(" + x.cls + ")" : ""} · ${x.count}회 · ${fmtTime(x.duration)} · 걸림 ${x.misses} · 최고 연속 ${x.best}</div>`).join("") : "아직 없음";
+    `<div>${esc(x.date)} · <b>${esc(x.name || "(이름 없음)")}</b> ${x.cls ? "(" + esc(x.cls) + ")" : ""} · ${x.count}회 · ${fmtTime(x.duration)} · 걸림 ${x.misses} · 최고 연속 ${x.best}${x.sheet ? " · 시트 ✓" : ""}</div>`).join("") : "아직 없음";
 }
 $("csvBtn").onclick = () => {
   const r = loadRecords();
@@ -399,8 +490,12 @@ function stopSession() {
 
 // ------------------------------------------------------------ 결과지
 function openResult() {
+  if (!$("nameIn").value.trim()) $("nameIn").value = $("nameIn0").value.trim();   // 시작 화면에서 적은 값으로 채움
+  if (!$("classIn").value.trim()) $("classIn").value = $("clsIn0").value.trim();
+  $("sheetResult").textContent = sheetUrl() ? "저장 버튼을 누르면 구글 시트에도 기록됩니다." : "";
   $("resultModal").style.display = "block";
   renderCard();
+  if (AUTO) persistRecord();
 }
 async function renderCard() {
   const r = lastResult; if (!r) return;
@@ -461,12 +556,19 @@ function cardFileName() {
   const name = $("nameIn").value.trim() || "결과";
   return `줄넘기_${name}_${lastResult.date.replace(/[: ]/g, "-")}.png`;
 }
-function persistRecord() {
+async function persistRecord() {
   if (!lastResult || lastResult.saved) return;
-  const r = loadRecords();
-  r.push({ date: lastResult.date, name: $("nameIn").value.trim(), cls: $("classIn").value.trim(), count: lastResult.count,
-           duration: lastResult.duration, perMin: lastResult.perMin, misses: lastResult.misses, best: lastResult.best });
-  saveRecords(r); lastResult.saved = true; renderRecords();
+  const rec = { date: lastResult.date, name: $("nameIn").value.trim(), cls: $("classIn").value.trim(), count: lastResult.count,
+                duration: lastResult.duration, perMin: lastResult.perMin, misses: lastResult.misses, best: lastResult.best,
+                timer: lastResult.timer, device: navigator.userAgent.slice(0, 80) };
+  const r = loadRecords(); r.push(rec); saveRecords(r); lastResult.saved = true; renderRecords();
+  setPref("jr_name", ""); $("nameIn0").value = "";   // 다음 학생을 위해 이름은 비운다 (학년-반은 유지)
+  if (!sheetUrl()) return;
+  $("sheetResult").textContent = "구글 시트에 기록하는 중...";
+  const res = await sendRecord(rec);
+  if (res.ok) { rec.sheet = true; saveRecords(loadRecords().map((x) => (x.date === rec.date && x.name === rec.name ? { ...x, sheet: true } : x))); renderRecords(); }
+  $("sheetResult").textContent = res.ok ? `구글 시트 "${rec.cls || "미지정"}" 탭에 기록했습니다.` : `시트 기록 실패 (${res.error}). 기기에 보관했다가 연결되면 자동으로 다시 보냅니다.`;
+  if (AUTO) console.log("SHEET " + JSON.stringify(res));
 }
 let renderTimer = null;
 for (const id of ["nameIn", "classIn"]) $(id).addEventListener("input", () => { clearTimeout(renderTimer); renderTimer = setTimeout(renderCard, 250); });
@@ -480,8 +582,8 @@ $("shareBtn").onclick = async () => {
   downloadBlob(cardBlob, cardFileName());
 };
 $("downloadBtn").onclick = async () => { await renderCard(); persistRecord(); downloadBlob(cardBlob, cardFileName()); };
-$("againBtn").onclick = () => { persistRecord(); $("resultModal").style.display = "none"; startSession(); };
-$("homeBtn").onclick = () => { persistRecord(); $("resultModal").style.display = "none"; $("live").style.display = "none"; $("setup").style.display = "flex"; };
+$("againBtn").onclick = () => { persistRecord(); $("resultModal").style.display = "none"; $("nameIn").value = ""; startSession(); };
+$("homeBtn").onclick = () => { persistRecord(); $("resultModal").style.display = "none"; $("nameIn").value = ""; $("live").style.display = "none"; $("setup").style.display = "flex"; };
 
 $("startBtn").onclick = startSession;
 $("stopBtn").onclick = stopSession;
